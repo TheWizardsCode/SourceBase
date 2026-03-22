@@ -30,34 +30,35 @@ const ingestionService = new IngestionService({
   failureReaction: config.INGEST_FAILURE_REACTION
 });
 
-const bot = new DiscordBot({
-  token: config.DISCORD_BOT_TOKEN,
-  monitoredChannelId: config.DISCORD_CHANNEL_ID,
-  logger,
-  onMonitoredMessage: async (message) => {
-    if (isLikelyContentQuery(message.content)) {
-      try {
-        const reply = await queryService.answerQuery(message.content);
-        if (reply) {
-          await message.reply(reply);
+  const bot = new DiscordBot({
+    token: config.DISCORD_BOT_TOKEN,
+    monitoredChannelId: config.DISCORD_CHANNEL_ID,
+    logger,
+    onMonitoredMessage: async (message) => {
+      logger.info("Received monitored channel message", {
+        messageId: message.id,
+        authorId: message.author.id
+      });
+
+      // Always attempt to ingest any URLs in the message first.
+      await ingestionService.ingestMessage(message);
+
+      // If the message appears to be a content query, also attempt to answer it.
+      if (isLikelyContentQuery(message.content)) {
+        try {
+          const reply = await queryService.answerQuery(message.content);
+          if (reply) {
+            await message.reply(reply);
+          }
+        } catch (error) {
+          logger.error("Failed to answer semantic query", {
+            messageId: message.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
         }
-      } catch (error) {
-        logger.error("Failed to answer semantic query", {
-          messageId: message.id,
-          error: error instanceof Error ? error.message : String(error)
-        });
       }
-      return;
     }
-
-    logger.info("Received monitored channel message", {
-      messageId: message.id,
-      authorId: message.author.id
-    });
-
-    await ingestionService.ingestMessage(message);
-  }
-});
+  });
 
 bot.start().catch((error) => {
   logger.error("Bot startup failed", {

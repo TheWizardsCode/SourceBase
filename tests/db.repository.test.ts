@@ -58,6 +58,30 @@ describe("LinkRepository", () => {
     await repository.saveCheckpoint("123", "999");
     expect(await repository.getCheckpoint("123")).toBe("999");
   });
+
+  it("searches links by semantic distance order", async () => {
+    const pool = createFakePool();
+    const repository = new LinkRepository(pool);
+
+    await repository.upsertLink({
+      url: "https://example.com/close",
+      title: "Close",
+      summary: "Closest match",
+      embedding: [0.9, 0.1, 0]
+    });
+
+    await repository.upsertLink({
+      url: "https://example.com/far",
+      title: "Far",
+      summary: "Far match",
+      embedding: [0, 1, 0]
+    });
+
+    const results = await repository.searchSimilarLinks([1, 0, 0], 2);
+    expect(results).toHaveLength(2);
+    expect(results[0].url).toBe("https://example.com/close");
+    expect(results[1].url).toBe("https://example.com/far");
+  });
 });
 
 type LinkRow = {
@@ -144,7 +168,43 @@ function createFakePool(): Queryable {
         };
       }
 
+      if (sql.includes("ORDER BY embedding <=>")) {
+        const queryEmbedding = parseVector(String(params[0]));
+        const limit = Number(params[1]);
+
+        const withEmbeddings = Array.from(links.values())
+          .filter((row) => Boolean(row.embedding))
+          .sort((a, b) => {
+            const distA = cosineDistance(queryEmbedding, parseVector(String(a.embedding)));
+            const distB = cosineDistance(queryEmbedding, parseVector(String(b.embedding)));
+            return distA - distB;
+          })
+          .slice(0, limit);
+
+        return { rowCount: withEmbeddings.length, rows: withEmbeddings };
+      }
+
       throw new Error(`Unhandled SQL in fake pool: ${sql}`);
     }
   };
+}
+
+function parseVector(value: string): number[] {
+  return value
+    .replace("[", "")
+    .replace("]", "")
+    .split(",")
+    .filter((item) => item.length > 0)
+    .map((item) => Number(item));
+}
+
+function cosineDistance(a: number[], b: number[]): number {
+  const dot = a.reduce((sum, current, index) => sum + current * (b[index] ?? 0), 0);
+  const aNorm = Math.sqrt(a.reduce((sum, current) => sum + current * current, 0));
+  const bNorm = Math.sqrt(b.reduce((sum, current) => sum + current * current, 0));
+  if (!aNorm || !bNorm) {
+    return 1;
+  }
+
+  return 1 - dot / (aNorm * bNorm);
 }

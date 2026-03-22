@@ -147,6 +147,33 @@ export class LinkRepository {
     const row = result.rows[0] as { last_processed_message_id: string };
     return row.last_processed_message_id;
   }
+
+  async searchSimilarLinks(embedding: number[], limit = 3): Promise<StoredLink[]> {
+    const result = await this.pool.query(
+      `
+      SELECT
+        id,
+        url,
+        canonical_url,
+        title,
+        summary,
+        content,
+        image_url,
+        metadata,
+        first_seen_at,
+        last_seen_at,
+        created_at,
+        updated_at
+      FROM links
+      WHERE embedding IS NOT NULL
+      ORDER BY embedding <=> $1::vector
+      LIMIT $2
+      `,
+      [toVectorLiteral(embedding), limit]
+    );
+
+    return result.rows.map((row) => mapStoredLink(row as StoredLinkRow));
+  }
 }
 
 interface StoredLinkRow {

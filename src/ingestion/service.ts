@@ -32,48 +32,67 @@ export class IngestionService {
       return;
     }
 
-    for (const url of urls) {
-      try {
-        const extracted = await this.options.extractor.extract(url);
-        if (!extracted) {
-          throw new Error("No extractable article content returned");
-        }
+// Add an "eyes" reaction to indicate the bot is processing this message
+      await message.react("👀");
 
-        const baseTextForLlm = [extracted.title, extracted.content].filter(Boolean).join("\n\n").trim();
-        const summary = baseTextForLlm ? await this.options.summarizer.summarize(baseTextForLlm) : null;
-        const embeddingText = [extracted.title, summary, extracted.content].filter(Boolean).join("\n\n").trim();
-        const embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
-
-        await this.options.repository.upsertLink({
-          url,
-          title: extracted.title,
-          summary,
-          content: extracted.content,
-          imageUrl: extracted.imageUrl,
-          embedding,
-          metadata: {
-            ...extracted.metadata,
-            discordMessageId: message.id,
-            discordChannelId: message.channelId,
-            discordAuthorId: message.author.id
+      for (const url of urls) {
+        try {
+          const extracted = await this.options.extractor.extract(url);
+          if (!extracted) {
+            throw new Error("No extractable article content returned");
           }
-        });
 
-        this.options.logger.info("Ingested URL from message", {
-          url,
-          messageId: message.id
-        });
+          const baseTextForLlm = [extracted.title, extracted.content].filter(Boolean).join("\n\n").trim();
+          const summary = baseTextForLlm ? await this.options.summarizer.summarize(baseTextForLlm) : null;
+          const embeddingText = [extracted.title, summary, extracted.content].filter(Boolean).join("\n\n").trim();
+          const embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
 
-        await message.react(this.options.successReaction);
-      } catch (error) {
-        this.options.logger.warn("Failed to ingest URL", {
-          url,
-          messageId: message.id,
-          error: error instanceof Error ? error.message : String(error)
-        });
+          await this.options.repository.upsertLink({
+            url,
+            title: extracted.title,
+            summary,
+            content: extracted.content,
+            imageUrl: extracted.imageUrl,
+            embedding,
+            metadata: {
+              ...extracted.metadata,
+              discordMessageId: message.id,
+              discordChannelId: message.channelId,
+              discordAuthorId: message.author.id
+            }
+          });
 
-        await message.react(this.options.failureReaction);
+          this.options.logger.info("Ingested URL from message", {
+            url,
+            messageId: message.id
+          });
+
+          // Remove the eyes reaction before adding the final success reaction
+          const botUserId = message.client?.user?.id;
+          if (botUserId) {
+            const eyesReaction = message.reactions.cache.get("👀") ?? message.reactions.resolve("👀");
+            if (eyesReaction) {
+              await eyesReaction.users.remove(botUserId);
+            }
+          }
+          await message.react(this.options.successReaction);
+        } catch (error) {
+          this.options.logger.warn("Failed to ingest URL", {
+            url,
+            messageId: message.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+
+          // Remove the eyes reaction before adding the failure reaction
+          const botUserId = message.client?.user?.id;
+          if (botUserId) {
+            const eyesReaction = message.reactions.cache.get("👀") ?? message.reactions.resolve("👀");
+            if (eyesReaction) {
+              await eyesReaction.users.remove(botUserId);
+            }
+          }
+          await message.react(this.options.failureReaction);
+        }
       }
-    }
   }
 }

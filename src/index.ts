@@ -4,6 +4,7 @@ import { LinkRepository } from "./db/repository.js";
 import { DiscordBot } from "./discord/client.js";
 import { ArticleExtractorContentExtractor } from "./ingestion/extractor.js";
 import { IngestionService } from "./ingestion/service.js";
+import { OpenAiCompatibleLlmClient } from "./llm/client.js";
 import { OpenAiCompatibleEmbeddingProvider } from "./llm/embeddings.js";
 import { Logger } from "./logger.js";
 import { isLikelyContentQuery } from "./query/detector.js";
@@ -11,11 +12,21 @@ import { QueryService } from "./query/service.js";
 
 const logger = new Logger(config.LOG_LEVEL);
 const repository = new LinkRepository(getDbPool());
-const queryService = new QueryService(repository, new OpenAiCompatibleEmbeddingProvider());
+const llmClient = new OpenAiCompatibleLlmClient({
+  baseUrl: config.LLM_BASE_URL,
+  model: config.LLM_MODEL,
+  maxRetries: config.LLM_MAX_RETRIES,
+  retryDelayMs: config.LLM_RETRY_DELAY_MS
+});
+const embeddingProvider = new OpenAiCompatibleEmbeddingProvider(llmClient);
+const queryService = new QueryService(repository, embeddingProvider);
 const ingestionService = new IngestionService({
   repository,
   extractor: new ArticleExtractorContentExtractor(),
+  summarizer: llmClient,
+  embedder: embeddingProvider,
   logger,
+  successReaction: config.INGEST_SUCCESS_REACTION,
   failureReaction: config.INGEST_FAILURE_REACTION
 });
 

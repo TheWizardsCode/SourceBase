@@ -26,7 +26,14 @@ describe("IngestionService", () => {
           metadata: { source: "test" }
         })
       },
+      summarizer: {
+        summarize: async () => "Generated summary"
+      },
+      embedder: {
+        embed: async () => [0.1, 0.2, 0.3]
+      },
       logger: new Logger("error"),
+      successReaction: "✅",
       failureReaction: "⚠️"
     });
 
@@ -42,7 +49,13 @@ describe("IngestionService", () => {
     await service.ingestMessage(message as never);
 
     expect(upsertLink).toHaveBeenCalledTimes(1);
-    expect(react).not.toHaveBeenCalled();
+    expect(upsertLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: "Generated summary",
+        embedding: [0.1, 0.2, 0.3]
+      })
+    );
+    expect(react).toHaveBeenCalledWith("✅");
   });
 
   it("reacts on extraction failure", async () => {
@@ -54,7 +67,14 @@ describe("IngestionService", () => {
           throw new Error("boom");
         }
       },
+      summarizer: {
+        summarize: async () => "Generated summary"
+      },
+      embedder: {
+        embed: async () => [0.1, 0.2, 0.3]
+      },
       logger: new Logger("error"),
+      successReaction: "✅",
       failureReaction: "⚠️"
     });
 

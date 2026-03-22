@@ -8,7 +8,10 @@ const configSchema = z.object({
   DISCORD_CHANNEL_ID: z.string().min(1, "DISCORD_CHANNEL_ID is required"),
   LLM_BASE_URL: z.string().url().default("http://localhost:11434/v1"),
   LLM_MODEL: z.string().min(1).default("gpt-4o-mini"),
+  LLM_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
+  LLM_RETRY_DELAY_MS: z.coerce.number().int().min(0).default(250),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  INGEST_SUCCESS_REACTION: z.string().min(1).default("✅"),
   INGEST_FAILURE_REACTION: z.string().min(1).default("⚠️"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info")
 });

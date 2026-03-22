@@ -13,12 +13,12 @@
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "start": "node dist/index.js",
+    "start": "node dist/src/index.js",
     "start:dev": "tsx watch src/index.ts"
   },
   "dependencies": {
     "@extractus/article-extractor": "^8.0.8",
-    "discord.js": "^14.19.3",
+    "discord.js": "^13.17.1",
     "dotenv": "^16.6.1",
     "pg": "^8.16.3",
     "zod": "^3.25.67"

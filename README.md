@@ -32,6 +32,7 @@ TypeScript Discord bot scaffold for monitoring a channel and indexing shared lin
 - `npm run start` - Run compiled bot from `dist/`.
 - `npm run lint` - Type check without emitting files.
 - `npm run test` - Run unit tests.
+- `npm run db:migrate` - Apply SQL migrations to the configured PostgreSQL database.
 
 ## Current status
 
@@ -43,3 +44,14 @@ This repository currently provides:
 - Initial unit tests for logger behavior
 
 Further work for link extraction, database persistence, LLM integration, and semantic search is tracked in child work items under the parent epic.
+
+## Database
+
+The storage layer uses PostgreSQL with pgvector and includes:
+
+- `migrations/001_initial_schema.sql` to create `links`, `app_checkpoints`, and indexes
+- `src/db/migrate.ts` migration runner with a `schema_migrations` table
+- `src/db/repository.ts` repository helpers for:
+  - link upsert-by-URL (duplicate handling)
+  - link lookup by URL
+  - save/load checkpoint by Discord channel

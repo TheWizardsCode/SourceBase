@@ -9,6 +9,7 @@ const configSchema = z.object({
   LLM_BASE_URL: z.string().url().default("http://localhost:11434/v1"),
   LLM_MODEL: z.string().min(1).default("gpt-4o-mini"),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  INGEST_FAILURE_REACTION: z.string().min(1).default("⚠️"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info")
 });
 

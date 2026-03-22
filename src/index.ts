@@ -2,6 +2,8 @@ import { config } from "./config.js";
 import { getDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
 import { DiscordBot } from "./discord/client.js";
+import { ArticleExtractorContentExtractor } from "./ingestion/extractor.js";
+import { IngestionService } from "./ingestion/service.js";
 import { OpenAiCompatibleEmbeddingProvider } from "./llm/embeddings.js";
 import { Logger } from "./logger.js";
 import { isLikelyContentQuery } from "./query/detector.js";
@@ -10,6 +12,12 @@ import { QueryService } from "./query/service.js";
 const logger = new Logger(config.LOG_LEVEL);
 const repository = new LinkRepository(getDbPool());
 const queryService = new QueryService(repository, new OpenAiCompatibleEmbeddingProvider());
+const ingestionService = new IngestionService({
+  repository,
+  extractor: new ArticleExtractorContentExtractor(),
+  logger,
+  failureReaction: config.INGEST_FAILURE_REACTION
+});
 
 const bot = new DiscordBot({
   token: config.DISCORD_BOT_TOKEN,
@@ -35,6 +43,8 @@ const bot = new DiscordBot({
       messageId: message.id,
       authorId: message.author.id
     });
+
+    await ingestionService.ingestMessage(message);
   }
 });
 

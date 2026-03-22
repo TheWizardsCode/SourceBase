@@ -12,6 +12,12 @@ export interface LinkStore {
 export interface IngestionServiceOptions {
   repository: LinkStore;
   extractor: ContentExtractor;
+  summarizer: {
+    summarize(content: string): Promise<string>;
+  };
+  embedder: {
+    embed(text: string): Promise<number[]>;
+  };
   logger: Logger;
   failureReaction: string;
 }
@@ -32,11 +38,18 @@ export class IngestionService {
           throw new Error("No extractable article content returned");
         }
 
+        const baseTextForLlm = [extracted.title, extracted.content].filter(Boolean).join("\n\n").trim();
+        const summary = baseTextForLlm ? await this.options.summarizer.summarize(baseTextForLlm) : null;
+        const embeddingText = [extracted.title, summary, extracted.content].filter(Boolean).join("\n\n").trim();
+        const embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
+
         await this.options.repository.upsertLink({
           url,
           title: extracted.title,
+          summary,
           content: extracted.content,
           imageUrl: extracted.imageUrl,
+          embedding,
           metadata: {
             ...extracted.metadata,
             discordMessageId: message.id,

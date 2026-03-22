@@ -65,3 +65,11 @@ The storage layer uses PostgreSQL with pgvector and includes:
 - Content extraction uses `src/ingestion/extractor.ts` (`@extractus/article-extractor`)
 - Ingestion orchestration uses `src/ingestion/service.ts`
 - On extraction/storage failure, the bot reacts to the source message with `INGEST_FAILURE_REACTION`
+
+## LLM integration
+
+- LLM proxy client in `src/llm/client.ts` supports:
+  - summary generation via chat completions
+  - embedding generation via embeddings endpoint
+  - configurable retries (`LLM_MAX_RETRIES`, `LLM_RETRY_DELAY_MS`)
+- Ingestion now stores both generated summary and embedding vectors for extracted links

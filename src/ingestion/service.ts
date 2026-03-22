@@ -19,6 +19,7 @@ export interface IngestionServiceOptions {
     embed(text: string): Promise<number[]>;
   };
   logger: Logger;
+  successReaction: string;
   failureReaction: string;
 }
 
@@ -62,6 +63,8 @@ export class IngestionService {
           url,
           messageId: message.id
         });
+
+        await message.react(this.options.successReaction);
       } catch (error) {
         this.options.logger.warn("Failed to ingest URL", {
           url,

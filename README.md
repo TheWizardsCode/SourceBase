@@ -64,6 +64,7 @@ The storage layer uses PostgreSQL with pgvector and includes:
 - URL detection uses `src/ingestion/url.ts`
 - Content extraction uses `src/ingestion/extractor.ts` (`@extractus/article-extractor`)
 - Ingestion orchestration uses `src/ingestion/service.ts`
+- On successful ingestion, the bot reacts with `INGEST_SUCCESS_REACTION`
 - On extraction/storage failure, the bot reacts to the source message with `INGEST_FAILURE_REACTION`
 
 ## LLM integration

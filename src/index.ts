@@ -26,6 +26,7 @@ const ingestionService = new IngestionService({
   summarizer: llmClient,
   embedder: embeddingProvider,
   logger,
+  successReaction: config.INGEST_SUCCESS_REACTION,
   failureReaction: config.INGEST_FAILURE_REACTION
 });
 

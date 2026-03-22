@@ -11,6 +11,7 @@ const configSchema = z.object({
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
   LLM_RETRY_DELAY_MS: z.coerce.number().int().min(0).default(250),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  INGEST_SUCCESS_REACTION: z.string().min(1).default("✅"),
   INGEST_FAILURE_REACTION: z.string().min(1).default("⚠️"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info")
 });

@@ -33,6 +33,7 @@ describe("IngestionService", () => {
         embed: async () => [0.1, 0.2, 0.3]
       },
       logger: new Logger("error"),
+      successReaction: "✅",
       failureReaction: "⚠️"
     });
 
@@ -54,7 +55,7 @@ describe("IngestionService", () => {
         embedding: [0.1, 0.2, 0.3]
       })
     );
-    expect(react).not.toHaveBeenCalled();
+    expect(react).toHaveBeenCalledWith("✅");
   });
 
   it("reacts on extraction failure", async () => {
@@ -73,6 +74,7 @@ describe("IngestionService", () => {
         embed: async () => [0.1, 0.2, 0.3]
       },
       logger: new Logger("error"),
+      successReaction: "✅",
       failureReaction: "⚠️"
     });
 

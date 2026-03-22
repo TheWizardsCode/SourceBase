@@ -42,6 +42,9 @@ This repository currently provides:
 - Discord client bootstrap with monitored channel filtering
 - Basic structured logger utility
 - Initial unit tests for logger behavior
+- URL extraction from Discord messages
+- Article extraction using `@extractus/article-extractor`
+- Ingestion flow with DB upsert and failure reactions
 
 Further work for link extraction, database persistence, LLM integration, and semantic search is tracked in child work items under the parent epic.
 
@@ -55,3 +58,10 @@ The storage layer uses PostgreSQL with pgvector and includes:
   - link upsert-by-URL (duplicate handling)
   - link lookup by URL
   - save/load checkpoint by Discord channel
+
+## Ingestion pipeline
+
+- URL detection uses `src/ingestion/url.ts`
+- Content extraction uses `src/ingestion/extractor.ts` (`@extractus/article-extractor`)
+- Ingestion orchestration uses `src/ingestion/service.ts`
+- On extraction/storage failure, the bot reacts to the source message with `INGEST_FAILURE_REACTION`

@@ -17,6 +17,7 @@
     "start:dev": "tsx watch src/index.ts"
   },
   "dependencies": {
+    "@extractus/article-extractor": "^8.0.8",
     "discord.js": "^14.19.3",
     "dotenv": "^16.6.1",
     "pg": "^8.16.3",

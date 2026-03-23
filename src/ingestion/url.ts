@@ -72,3 +72,54 @@ export function normalizeYouTubeUrl(url: string): string | null {
   }
   return `https://www.youtube.com/watch?v=${videoId}`;
 }
+
+/**
+ * Extract anchor hrefs from HTML content
+ * Used for crawling linked pages
+ */
+export function extractAnchorHrefsFromHtml(html: string): string[] {
+  const hrefRegex = /href="([^"]+)"/gi;
+  const matches: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = hrefRegex.exec(html)) !== null) {
+    if (match[1] && !match[1].startsWith('#') && !match[1].startsWith('javascript:')) {
+      matches.push(match[1]);
+    }
+  }
+  return matches;
+}
+
+/**
+ * Extract crawl seed URL from message text
+ * Looks for special crawl commands
+ */
+export function extractCrawlSeedUrl(text: string): string | null {
+  // Check for crawl command pattern: /crawl <url>
+  const crawlMatch = text.match(/\/crawl\s+(https?:\/\/[^\s]+)/i);
+  if (crawlMatch) {
+    return crawlMatch[1];
+  }
+  return null;
+}
+
+/**
+ * Normalize discovered URLs relative to a base URL
+ */
+export function normalizeDiscoveredUrls(baseUrl: string, urls: string[]): string[] {
+  const normalized = new Set<string>();
+  const base = new URL(baseUrl);
+
+  for (const url of urls) {
+    try {
+      const absolute = new URL(url, base).href;
+      // Only include same-origin URLs
+      if (absolute.startsWith(base.origin)) {
+        normalized.add(absolute);
+      }
+    } catch {
+      // Invalid URL, skip
+    }
+  }
+
+  return Array.from(normalized);
+}

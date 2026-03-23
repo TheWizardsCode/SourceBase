@@ -17,7 +17,10 @@ const configSchema = z.object({
   // YouTube configuration
   YOUTUBE_API_KEY: z.string().optional(),
   YOUTUBE_CAPTION_LANGUAGE: z.string().default("en"),
-  ENABLE_YOUTUBE_CAPTIONS: z.enum(["true", "false"]).default("true").transform(v => v === "true")
+  ENABLE_YOUTUBE_CAPTIONS: z.enum(["true", "false"]).default("true").transform(v => v === "true"),
+  // Backfill configuration
+  BACKFILL_INTERVAL_MS: z.coerce.number().int().min(60000).default(3600000), // 1 hour default
+  MAX_BACKFILL_ATTEMPTS: z.coerce.number().int().min(1).default(3)
 });
 
 const parsed = configSchema.safeParse(process.env);

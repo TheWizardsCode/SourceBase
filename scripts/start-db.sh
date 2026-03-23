@@ -94,7 +94,7 @@ fi
 # If DATABASE_URL points to a non-existent DB, create it automatically so start
 # works out-of-the-box in local dev.
 if command -v node >/dev/null 2>&1; then
-  node - <<'EOF' || true
+  node - <<'EOF'
 const { Client } = require('pg');
 
 function parseDbName(url) {
@@ -141,35 +141,47 @@ if command -v node >/dev/null 2>&1; then
   fi
 fi
 
-# Start Milvus (if not running) using the chosen runtime
+# Start Qdrant (if not running) using the chosen runtime
 if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then
-  echo "Ensuring Milvus container is running"
-  if $RUNTIME ps --filter name=sourcebase-milvus --format "{{.Names}}" | grep -q sourcebase-milvus; then
-    echo "Milvus container already running"
-  elif $RUNTIME ps -a --filter name=sourcebase-milvus --format "{{.Names}}" | grep -q sourcebase-milvus; then
-    echo "Milvus container exists but not running; starting"
-    start_container sourcebase-milvus || true
+  echo "Ensuring Qdrant container is running"
+  if $RUNTIME ps --filter name=sourcebase-qdrant --format "{{.Names}}" | grep -q sourcebase-qdrant; then
+    echo "Qdrant container already running"
+  elif $RUNTIME ps -a --filter name=sourcebase-qdrant --format "{{.Names}}" | grep -q sourcebase-qdrant; then
+    echo "Qdrant container exists but not running; starting"
+    start_container sourcebase-qdrant || true
   else
-    echo "Creating and starting Milvus container"
-    $RUNTIME run -d --name sourcebase-milvus -p 19530:19530 -p 9091:9091 -v milvus-data:/var/lib/milvus milvusdb/milvus:v2.3.0 || true
+    echo "Creating and starting Qdrant container"
+    $RUNTIME run -d --name sourcebase-qdrant -p 6333:6333 -p 6334:6334 -v sourcebase-qdrant-data:/qdrant/storage docker.io/qdrant/qdrant:v1.13.4 || true
   fi
 
-  # Wait for Milvus to accept connections on 19530
-  echo "Waiting for Milvus to be available on localhost:19530..."
-  MIL_WAIT=120
-  MIL_WAITED=0
-  while true; do
-    if bash -c "</dev/tcp/127.0.0.1/19530" >/dev/null 2>&1; then
-      echo "Milvus TCP socket open"
-      break
+  # Wait for Qdrant to accept connections on 6333, but avoid blocking if the
+  # container exits unexpectedly.
+  echo "Checking Qdrant container status"
+  CONTAINER_STATUS=$($RUNTIME ps -a --filter name=sourcebase-qdrant --format "{{.Status}}" 2>/dev/null || true)
+  if echo "$CONTAINER_STATUS" | grep -q "Exited"; then
+    echo "Qdrant container is not running (status: $CONTAINER_STATUS). Skipping wait — check container logs for details."
+    if command -v $RUNTIME >/dev/null 2>&1; then
+      echo "--- recent Qdrant logs ---"
+      $RUNTIME logs sourcebase-qdrant || true
+      echo "--- end Qdrant logs ---"
     fi
-    if [ "$MIL_WAITED" -ge "$MIL_WAIT" ]; then
-      echo "Timed out waiting for Milvus on localhost:19530" >&2
-      break
-    fi
-    sleep 1
-    MIL_WAITED=$((MIL_WAITED + 1))
-  done
+  else
+    echo "Waiting for Qdrant to be available on localhost:6333..."
+    ANN_WAIT=120
+    ANN_WAITED=0
+    while true; do
+      if bash -c "</dev/tcp/127.0.0.1/6333" >/dev/null 2>&1; then
+        echo "Qdrant TCP socket open"
+        break
+      fi
+      if [ "$ANN_WAITED" -ge "$ANN_WAIT" ]; then
+        echo "Timed out waiting for Qdrant on localhost:6333" >&2
+        break
+      fi
+      sleep 1
+      ANN_WAITED=$((ANN_WAITED + 1))
+    done
+  fi
 fi
 
 # Run DB migrations (best-effort)

@@ -430,7 +430,25 @@ export class IngestionService {
       const embeddingText = transcript
         ? [metadata.title, transcript].filter(Boolean).join("\n\n").trim()
         : [metadata.title, summary, metadata.description].filter(Boolean).join("\n\n").trim();
-      const embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
+      let embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
+      
+      // Resize embedding to match DB dimension
+      const TARGET_EMBED_DIM = 2000;
+      if (embedding) {
+        if (embedding.length !== TARGET_EMBED_DIM) {
+          this.options.logger.warn("Embedding dimension mismatch, resizing to DB target", {
+            url,
+            expected: TARGET_EMBED_DIM,
+            actual: embedding.length
+          });
+          if (embedding.length > TARGET_EMBED_DIM) {
+            embedding = embedding.slice(0, TARGET_EMBED_DIM);
+          } else {
+            const padding = new Array(TARGET_EMBED_DIM - embedding.length).fill(0);
+            embedding = embedding.concat(padding);
+          }
+        }
+      }
 
       // Report storing phase
       progress.phase = "storing";

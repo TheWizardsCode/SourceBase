@@ -486,6 +486,14 @@ export class IngestionService {
         messageId: message.id
       });
 
+      // Remove eyes reaction before adding success reaction
+      const botUserId = message.client?.user?.id;
+      if (botUserId) {
+        const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
+        if (eyesReaction) {
+          await eyesReaction.users.remove(botUserId);
+        }
+      }
       await message.react(this.options.successReaction);
       
       return { summary, title: metadata.title };

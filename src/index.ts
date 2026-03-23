@@ -153,7 +153,7 @@ const bot = new DiscordBot({
 
     // Create a status message for progress reporting
     const urls = message.content.match(/https?:\/\/[^\s]+/g) || [];
-    if (urls.length > 0 && message.channel.isTextBased() && 'send' in message.channel) {
+    if (urls.length > 0 && message.channel.type === 'GUILD_TEXT') {
       const statusMsg = await message.channel.send(`⏳ Starting to process ${urls.length} URL${urls.length > 1 ? 's' : ''}...`);
       statusMessages.set(message.id, statusMsg);
     }

@@ -2,8 +2,9 @@ import type { Message } from "discord.js";
 
 import type { LinkRecord } from "../db/repository.js";
 import type { Logger } from "../logger.js";
-import { extractUrls } from "./url.js";
+import { extractUrls, isYouTubeUrl, extractYouTubeVideoId } from "./url.js";
 import type { ContentExtractor } from "./extractor.js";
+import { YouTubeApiClient, type YouTubeVideoMetadata } from "./youtube.js";
 
 export interface LinkStore {
   upsertLink(link: LinkRecord): Promise<unknown>;
@@ -21,6 +22,7 @@ export interface IngestionServiceOptions {
   logger: Logger;
   successReaction: string;
   failureReaction: string;
+  youtubeClient?: YouTubeApiClient;
 }
 
 export class IngestionService {
@@ -34,37 +36,12 @@ export class IngestionService {
 
     for (const url of urls) {
       try {
-        const extracted = await this.options.extractor.extract(url);
-        if (!extracted) {
-          throw new Error("No extractable article content returned");
+        // Check if this is a YouTube URL
+        if (isYouTubeUrl(url) && this.options.youtubeClient?.isConfigured()) {
+          await this.ingestYouTubeUrl(url, message);
+        } else {
+          await this.ingestGenericUrl(url, message);
         }
-
-        const baseTextForLlm = [extracted.title, extracted.content].filter(Boolean).join("\n\n").trim();
-        const summary = baseTextForLlm ? await this.options.summarizer.summarize(baseTextForLlm) : null;
-        const embeddingText = [extracted.title, summary, extracted.content].filter(Boolean).join("\n\n").trim();
-        const embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
-
-        await this.options.repository.upsertLink({
-          url,
-          title: extracted.title,
-          summary,
-          content: extracted.content,
-          imageUrl: extracted.imageUrl,
-          embedding,
-          metadata: {
-            ...extracted.metadata,
-            discordMessageId: message.id,
-            discordChannelId: message.channelId,
-            discordAuthorId: message.author.id
-          }
-        });
-
-        this.options.logger.info("Ingested URL from message", {
-          url,
-          messageId: message.id
-        });
-
-        await message.react(this.options.successReaction);
       } catch (error) {
         this.options.logger.warn("Failed to ingest URL", {
           url,
@@ -75,5 +52,92 @@ export class IngestionService {
         await message.react(this.options.failureReaction);
       }
     }
+  }
+
+  private async ingestYouTubeUrl(url: string, message: Message): Promise<void> {
+    const videoId = extractYouTubeVideoId(url);
+    if (!videoId) {
+      this.options.logger.warn("Failed to extract YouTube video ID", { url });
+      await this.ingestGenericUrl(url, message);
+      return;
+    }
+
+    this.options.logger.info("Processing YouTube URL", { url, videoId });
+
+    // Fetch metadata from YouTube API
+    const metadata = await this.options.youtubeClient!.fetchVideoMetadata(videoId);
+
+    if (!metadata) {
+      this.options.logger.warn("Failed to fetch YouTube metadata, falling back to generic extraction", { url, videoId });
+      await this.ingestGenericUrl(url, message);
+      return;
+    }
+
+    // Generate summary and embedding
+    const content = [metadata.title, metadata.description].filter(Boolean).join("\n\n").trim();
+    const summary = content ? await this.options.summarizer.summarize(content) : null;
+    const embeddingText = [metadata.title, summary, metadata.description].filter(Boolean).join("\n\n").trim();
+    const embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
+
+    await this.options.repository.upsertLink({
+      url,
+      title: metadata.title,
+      summary,
+      content: metadata.description,
+      imageUrl: metadata.thumbnailUrl,
+      embedding,
+      metadata: {
+        discordMessageId: message.id,
+        discordChannelId: message.channelId,
+        discordAuthorId: message.author.id,
+        contentType: "youtube",
+        videoId: metadata.videoId,
+        channelTitle: metadata.channelTitle,
+        publishedAt: metadata.publishedAt
+      }
+    });
+
+    this.options.logger.info("Ingested YouTube URL", {
+      url,
+      videoId,
+      title: metadata.title,
+      messageId: message.id
+    });
+
+    await message.react(this.options.successReaction);
+  }
+
+  private async ingestGenericUrl(url: string, message: Message): Promise<void> {
+    const extracted = await this.options.extractor.extract(url);
+    if (!extracted) {
+      throw new Error("No extractable article content returned");
+    }
+
+    const baseTextForLlm = [extracted.title, extracted.content].filter(Boolean).join("\n\n").trim();
+    const summary = baseTextForLlm ? await this.options.summarizer.summarize(baseTextForLlm) : null;
+    const embeddingText = [extracted.title, summary, extracted.content].filter(Boolean).join("\n\n").trim();
+    const embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
+
+    await this.options.repository.upsertLink({
+      url,
+      title: extracted.title,
+      summary,
+      content: extracted.content,
+      imageUrl: extracted.imageUrl,
+      embedding,
+      metadata: {
+        ...extracted.metadata,
+        discordMessageId: message.id,
+        discordChannelId: message.channelId,
+        discordAuthorId: message.author.id
+      }
+    });
+
+    this.options.logger.info("Ingested URL from message", {
+      url,
+      messageId: message.id
+    });
+
+    await message.react(this.options.successReaction);
   }
 }

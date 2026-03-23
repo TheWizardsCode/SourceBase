@@ -4,6 +4,7 @@ import { LinkRepository } from "./db/repository.js";
 import { DiscordBot } from "./discord/client.js";
 import { ArticleExtractorContentExtractor } from "./ingestion/extractor.js";
 import { IngestionService } from "./ingestion/service.js";
+import { YouTubeApiClient } from "./ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "./llm/client.js";
 import { OpenAiCompatibleEmbeddingProvider } from "./llm/embeddings.js";
 import { Logger } from "./logger.js";
@@ -20,6 +21,15 @@ const llmClient = new OpenAiCompatibleLlmClient({
 });
 const embeddingProvider = new OpenAiCompatibleEmbeddingProvider(llmClient);
 const queryService = new QueryService(repository, embeddingProvider);
+
+// Initialize YouTube API client if API key is configured
+const youtubeClient = new YouTubeApiClient(logger);
+if (youtubeClient.isConfigured()) {
+  logger.info("YouTube API client initialized");
+} else {
+  logger.warn("YouTube API key not configured, YouTube URLs will use generic extraction");
+}
+
 const ingestionService = new IngestionService({
   repository,
   extractor: new ArticleExtractorContentExtractor(),
@@ -27,7 +37,8 @@ const ingestionService = new IngestionService({
   embedder: embeddingProvider,
   logger,
   successReaction: config.INGEST_SUCCESS_REACTION,
-  failureReaction: config.INGEST_FAILURE_REACTION
+  failureReaction: config.INGEST_FAILURE_REACTION,
+  youtubeClient
 });
 
 const bot = new DiscordBot({

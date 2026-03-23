@@ -13,7 +13,11 @@ const configSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   INGEST_SUCCESS_REACTION: z.string().min(1).default("✅"),
   INGEST_FAILURE_REACTION: z.string().min(1).default("⚠️"),
-  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info")
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  // YouTube configuration
+  YOUTUBE_API_KEY: z.string().optional(),
+  YOUTUBE_CAPTION_LANGUAGE: z.string().default("en"),
+  ENABLE_YOUTUBE_CAPTIONS: z.enum(["true", "false"]).default("true").transform(v => v === "true")
 });
 
 const parsed = configSchema.safeParse(process.env);

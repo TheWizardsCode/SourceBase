@@ -34,6 +34,12 @@ export function isLikelyContentQuery(messageContent: string): boolean {
     return false;
   }
 
+  // If message contains a URL, it's not a query
+  const URL_REGEX = /https?:\/\/[^\s]+/;
+  if (URL_REGEX.test(trimmed)) {
+    return false;
+  }
+
   const hasQuestionMark = trimmed.includes("?");
   const startsLikeQuestion = QUERY_PREFIXES.some((prefix) => trimmed.startsWith(`${prefix} `));
   const hasSearchHint = LINK_SEARCH_HINTS.some((hint) => trimmed.includes(hint));

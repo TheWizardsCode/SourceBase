@@ -8,6 +8,9 @@ export interface SearchableLinkStore {
   searchSimilarLinks(embedding: number[], limit: number): Promise<StoredLink[]>;
 }
 
+// Target embedding dimension must match the dimension used for stored embeddings
+const TARGET_EMBED_DIM = 2000;
+
 export class QueryService {
   constructor(
     private readonly store: SearchableLinkStore,
@@ -20,7 +23,18 @@ export class QueryService {
       return null;
     }
 
-    const embedding = await this.embeddingProvider.embed(query);
+    let embedding = await this.embeddingProvider.embed(query);
+    
+    // Resize query embedding to match stored embedding dimension
+    if (embedding.length !== TARGET_EMBED_DIM) {
+      if (embedding.length > TARGET_EMBED_DIM) {
+        embedding = embedding.slice(0, TARGET_EMBED_DIM);
+      } else {
+        const padding = new Array(TARGET_EMBED_DIM - embedding.length).fill(0);
+        embedding = embedding.concat(padding);
+      }
+    }
+    
     const results = await this.store.searchSimilarLinks(embedding, 3);
 
     if (!results.length) {

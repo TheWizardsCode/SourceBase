@@ -62,7 +62,7 @@ export class QueryService {
       }
       
       lines.push(`**${index + 1}. ${title}**`);
-      lines.push(result.url);
+      lines.push(`<${result.url}>`);
       lines.push("");
       lines.push(`> ${summary}`);
     }

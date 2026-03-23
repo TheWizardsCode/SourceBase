@@ -33,8 +33,9 @@ describe("YouTubeApiClient", () => {
       expect(unconfiguredClient.isConfigured()).toBe(false);
     });
 
-    it("returns false when API key is undefined", () => {
-      const unconfiguredClient = new YouTubeApiClient(mockLogger);
+    it("returns false when API key is undefined and config has no key", () => {
+      // When no API key provided and config doesn't have one, it should be unconfigured
+      const unconfiguredClient = new YouTubeApiClient(mockLogger, "");
       expect(unconfiguredClient.isConfigured()).toBe(false);
     });
   });

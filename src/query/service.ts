@@ -63,6 +63,7 @@ export class QueryService {
       
       lines.push(`${index + 1}. ${title}`);
       lines.push(`   ${result.url}`);
+      lines.push(""); // Empty line for spacing
       lines.push(`   ${summary}`);
     }
 

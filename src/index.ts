@@ -6,6 +6,7 @@ import { DiscordBot } from "./discord/client.js";
 import { ArticleExtractorContentExtractor } from "./ingestion/extractor.js";
 import { IngestionService } from "./ingestion/service.js";
 import type { ProgressUpdate, IngestionProgress, ProgressPhase } from "./ingestion/service.js";
+import { DocumentQueue } from "./ingestion/queue.js";
 import { YouTubeApiClient } from "./ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "./llm/client.js";
 import { OpenAiCompatibleEmbeddingProvider } from "./llm/embeddings.js";
@@ -42,13 +43,20 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
     let summary = update.summary;
     
     // Truncate summary if needed to fit within Discord's limit
-    // Reserve space for emoji, counter, title, and newlines
-    const reservedSpace = 100;
+    // Reserve space for emoji, counter, title, queue info, and newlines
+    const reservedSpace = 150;
     if (summary.length > 2000 - reservedSpace - title.length) {
       summary = summary.slice(0, 2000 - reservedSpace - title.length - 3) + "...";
     }
     
-    return `${emoji} ${progressCounter}${title}\n\n${summary}`;
+    let result = `${emoji} ${progressCounter}${title}\n\n${summary}`;
+    
+    // Add queue size indicator if there are more items in queue
+    if (update.queueSize && update.queueSize > 0) {
+      result += `\n\n📋 ${update.queueSize} more in queue`;
+    }
+    
+    return result;
   }
 
   let message = `${emoji} ${progressCounter}${label}: <${update.url}>`;
@@ -62,6 +70,11 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
     const failed = overall.failed;
     const total = overall.urls.length;
     message += `\n   Progress: ${completed} succeeded, ${failed} failed (${completed + failed}/${total})`;
+  }
+
+  // Add queue size indicator if there are more items in queue
+  if (update.queueSize && update.queueSize > 0) {
+    message += `\n📋 ${update.queueSize} more in queue`;
   }
 
   // Final safety check - truncate if still too long
@@ -129,7 +142,11 @@ const ingestionService = new IngestionService({
           const summary = overall.failed > 0
             ? `\n\n📊 Final: ${overall.completed} succeeded, ${overall.failed} failed`
             : `\n\n✅ All ${overall.completed} URLs processed successfully`;
-          await statusMsg.edit(content + summary);
+          const queueInfo = update.queueSize && update.queueSize > 0 ? `\n📋 ${update.queueSize} more in queue` : "";
+          await statusMsg.edit(content + summary + queueInfo);
+        } else if (update.queueSize && update.queueSize > 0) {
+          // Add queue info for single URL runs too
+          await statusMsg.edit(content + `\n\n📋 ${update.queueSize} more in queue`);
         }
         // Remove all entries that reference these URLs
         for (const [key] of statusMessages) {
@@ -144,6 +161,12 @@ const ingestionService = new IngestionService({
       });
     }
   }
+});
+
+// Create the document queue to ensure sequential processing
+const documentQueue = new DocumentQueue({
+  logger,
+  ingestionService
 });
 
 const bot = new DiscordBot({
@@ -174,11 +197,14 @@ const bot = new DiscordBot({
     // Create a status message for progress reporting
     const urls = message.content.match(/https?:\/\/[^\s]+/g) || [];
     if (urls.length > 0 && message.channel.type === 'GUILD_TEXT') {
-      const statusMsg = await message.channel.send(`⏳ Starting to process ${urls.length} URL${urls.length > 1 ? 's' : ''}...`);
+      const queueSize = documentQueue.getQueueSize();
+      const queueInfo = queueSize > 0 ? ` (${queueSize} ahead in queue)` : "";
+      const statusMsg = await message.channel.send(`⏳ Queued ${urls.length} URL${urls.length > 1 ? 's' : ''}${queueInfo}...`);
       statusMessages.set(message.id, statusMsg);
     }
 
-    await ingestionService.ingestMessage(message);
+    // Add message to queue for sequential processing
+    documentQueue.enqueue(message);
   }
 });
 

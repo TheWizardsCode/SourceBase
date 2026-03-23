@@ -25,6 +25,7 @@ export interface ProgressUpdate {
   message?: string;
   summary?: string;
   title?: string;
+  queueSize?: number;
 }
 
 export interface IngestionProgress {
@@ -34,6 +35,7 @@ export interface IngestionProgress {
   currentUrl: string | null;
   phase: ProgressPhase;
   messageId?: string;
+  queueSize?: number;
 }
 
 export type ProgressCallback = (update: ProgressUpdate, overall: IngestionProgress, messageId?: string) => void | Promise<void>;
@@ -124,7 +126,7 @@ export class IngestionService {
 
     async ingestMessage(
       message: Message,
-      progressContext?: { urls: string[]; currentIndex: number }
+      progressContext?: { urls: string[]; currentIndex: number; queueSize?: number }
     ): Promise<void> {
       const urls = extractUrls(message.content);
       if (!urls.length) {
@@ -142,7 +144,8 @@ export class IngestionService {
         failed: 0,
         currentUrl: null,
         phase: "downloading",
-        messageId: message.id
+        messageId: message.id,
+        queueSize: progressContext?.queueSize ?? 0
       };
 
       // Add an "eyes" reaction to indicate the bot is processing this message

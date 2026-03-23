@@ -39,7 +39,16 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
   // For completed phase, show the summary instead of the URL
   if (update.phase === "completed" && update.summary) {
     const title = update.title || "Untitled";
-    return `${emoji} ${progressCounter}${title}\n\n${update.summary}`;
+    let summary = update.summary;
+    
+    // Truncate summary if needed to fit within Discord's limit
+    // Reserve space for emoji, counter, title, and newlines
+    const reservedSpace = 100;
+    if (summary.length > 2000 - reservedSpace - title.length) {
+      summary = summary.slice(0, 2000 - reservedSpace - title.length - 3) + "...";
+    }
+    
+    return `${emoji} ${progressCounter}${title}\n\n${summary}`;
   }
 
   let message = `${emoji} ${progressCounter}${label}: <${update.url}>`;
@@ -53,6 +62,11 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
     const failed = overall.failed;
     const total = overall.urls.length;
     message += `\n   Progress: ${completed} succeeded, ${failed} failed (${completed + failed}/${total})`;
+  }
+
+  // Final safety check - truncate if still too long
+  if (message.length > 2000) {
+    message = message.slice(0, 1997) + "...";
   }
 
   return message;

@@ -5,6 +5,7 @@ export interface ExtractedContent {
   title: string | null;
   content: string | null;
   imageUrl: string | null;
+  links?: string[];
   metadata: Record<string, unknown>;
 }
 
@@ -26,6 +27,7 @@ export class ArticleExtractorContentExtractor implements ContentExtractor {
       title: article.title ?? null,
       content: article.content ?? article.description ?? null,
       imageUrl: image,
+      links: article.links ?? [],
       metadata: {
         source: "article-extractor",
         published: article.published ?? null,

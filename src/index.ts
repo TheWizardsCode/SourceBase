@@ -36,6 +36,12 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
   const emoji = phaseEmoji[update.phase];
   const label = phaseLabel[update.phase];
 
+  // For completed phase, show the summary instead of the URL
+  if (update.phase === "completed" && update.summary) {
+    const title = update.title || "Untitled";
+    return `${emoji} ${progressCounter}${title}\n\n${update.summary}`;
+  }
+
   let message = `${emoji} ${progressCounter}${label}: ${update.url}`;
 
   if (update.phase === "failed" && update.message) {

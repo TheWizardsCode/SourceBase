@@ -23,6 +23,8 @@ export interface ProgressUpdate {
   current: number;
   total: number;
   message?: string;
+  summary?: string;
+  title?: string;
 }
 
 export interface IngestionProgress {
@@ -165,11 +167,11 @@ export class IngestionService {
 
           // Check if this is a YouTube URL
           if (isYouTubeUrl(url) && this.options.youtubeClient?.isConfigured()) {
-            await this.ingestYouTubeUrl(url, message, currentIndex + 1, allUrls.length, progress);
+            const result = await this.ingestYouTubeUrl(url, message, currentIndex + 1, allUrls.length, progress);
             progress.completed++;
             progress.phase = "completed";
             await this.reportProgress(
-              { phase: "completed", url, current: currentIndex + 1, total: allUrls.length },
+              { phase: "completed", url, current: currentIndex + 1, total: allUrls.length, summary: result.summary ?? undefined, title: result.title },
               progress
             );
             continue;
@@ -327,7 +329,7 @@ export class IngestionService {
           progress.completed++;
           progress.phase = "completed";
           await this.reportProgress(
-            { phase: "completed", url, current: currentIndex + 1, total: allUrls.length },
+            { phase: "completed", url, current: currentIndex + 1, total: allUrls.length, summary: summary ?? undefined, title: extracted.title ?? undefined },
             progress
           );
 
@@ -377,7 +379,7 @@ export class IngestionService {
       currentIndex: number,
       totalUrls: number,
       progress: IngestionProgress
-    ): Promise<void> {
+    ): Promise<{ summary: string | null; title: string }> {
       const videoId = extractYouTubeVideoId(url);
       if (!videoId) {
         throw new Error("Failed to extract YouTube video ID");
@@ -467,6 +469,8 @@ export class IngestionService {
       });
 
       await message.react(this.options.successReaction);
+      
+      return { summary, title: metadata.title };
     }
 
 }

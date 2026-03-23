@@ -42,14 +42,37 @@ export class QueryService {
     }
 
     const lines = ["Here are the most relevant links I found:"];
+    const MAX_TOTAL_LENGTH = 2000;
+    const HEADER_LENGTH = lines[0].length + 2; // +2 for newlines
+    
+    // Calculate available space per result (rough estimate)
+    const maxPerResult = Math.floor((MAX_TOTAL_LENGTH - HEADER_LENGTH) / results.length);
+    
     for (const [index, result] of results.entries()) {
       const title = result.title ?? result.url;
-      const summary = result.summary?.trim() || "No summary available.";
+      let summary = result.summary?.trim() || "No summary available.";
+      
+      // Truncate summary if needed to fit within Discord's limit
+      // Reserve space for formatting (number, title, url, newlines)
+      const reservedSpace = 50; // Approximate space for formatting
+      const maxSummaryLength = Math.max(50, maxPerResult - reservedSpace - title.length);
+      
+      if (summary.length > maxSummaryLength) {
+        summary = summary.slice(0, maxSummaryLength - 3) + "...";
+      }
+      
       lines.push(`${index + 1}. ${title}`);
       lines.push(`   ${result.url}`);
       lines.push(`   ${summary}`);
     }
 
-    return lines.join("\n");
+    let result = lines.join("\n");
+    
+    // Final safety check - truncate if still too long
+    if (result.length > MAX_TOTAL_LENGTH) {
+      result = result.slice(0, MAX_TOTAL_LENGTH - 3) + "...";
+    }
+    
+    return result;
   }
 }

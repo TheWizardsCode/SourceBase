@@ -13,7 +13,7 @@
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "start": "node dist/src/index.js",
+    "start": "./scripts/start-db.sh && node dist/src/index.js",
     "start:dev": "tsx watch src/index.ts"
   },
   "dependencies": {

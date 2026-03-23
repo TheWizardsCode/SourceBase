@@ -42,7 +42,7 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
     return `${emoji} ${progressCounter}${title}\n\n${update.summary}`;
   }
 
-  let message = `${emoji} ${progressCounter}${label}: ${update.url}`;
+  let message = `${emoji} ${progressCounter}${label}: <${update.url}>`;
 
   if (update.phase === "failed" && update.message) {
     message += `\n   Error: ${update.message}`;

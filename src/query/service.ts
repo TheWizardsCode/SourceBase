@@ -61,10 +61,10 @@ export class QueryService {
         summary = summary.slice(0, maxSummaryLength - 3) + "...";
       }
       
-      lines.push(`${index + 1}. ${title}`);
-      lines.push(`   ${result.url}`);
-      lines.push(""); // Empty line for spacing
-      lines.push(`   ${summary}`);
+      lines.push(`**${index + 1}. ${title}**`);
+      lines.push(result.url);
+      lines.push("");
+      lines.push(`> ${summary}`);
     }
 
     let result = lines.join("\n");

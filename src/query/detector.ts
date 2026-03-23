@@ -16,6 +16,14 @@ const QUERY_PREFIXES = [
   "any"
 ];
 
+const TRIGGER_PHRASES = [
+  "tell me about",
+  "what is",
+  "explain",
+  "describe",
+  "how does"
+];
+
 const LINK_SEARCH_HINTS = [
   "link",
   "links",
@@ -43,6 +51,7 @@ export function isLikelyContentQuery(messageContent: string): boolean {
   const hasQuestionMark = trimmed.includes("?");
   const startsLikeQuestion = QUERY_PREFIXES.some((prefix) => trimmed.startsWith(`${prefix} `));
   const hasSearchHint = LINK_SEARCH_HINTS.some((hint) => trimmed.includes(hint));
+  const hasTriggerPhrase = TRIGGER_PHRASES.some((phrase) => trimmed.startsWith(phrase));
 
-  return hasQuestionMark || (startsLikeQuestion && hasSearchHint);
+  return hasQuestionMark || startsLikeQuestion || hasTriggerPhrase;
 }

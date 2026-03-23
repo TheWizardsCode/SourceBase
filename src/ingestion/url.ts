@@ -2,6 +2,19 @@ const URL_REGEX = /https?:\/\/[^\s<>()]+/gi;
 const CRAWL_REGEX = /(?:^|\s)crawl\b[\s:,-]+(https?:\/\/[^\s<>()]+)/i;
 const HREF_REGEX = /<a\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
 
+// YouTube URL patterns
+const YOUTUBE_PATTERNS = {
+  standard: /(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})\b/i,
+  short: /(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})\b/i,
+  shorts: /(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})\b/i,
+  embed: /(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})\b/i,
+  live: /(?:https?:\/\/)?(?:www\.)?youtube\.com\/live\/([a-zA-Z0-9_-]{11})\b/i,
+  mobile: /(?:https?:\/\/)?m\.youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})\b/i,
+  music: /(?:https?:\/\/)?music\.youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})\b/i
+};
+
+const VIDEO_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/;
+
 export function extractUrls(text: string): string[] {
   const matches = text.match(URL_REGEX) ?? [];
   const normalized = matches.map((raw) => raw.replace(/[),.;!?]+$/g, ""));
@@ -61,4 +74,29 @@ export function extractAnchorHrefsFromHtml(html: string | null | undefined): str
   }
 
   return Array.from(hrefs);
+}
+
+export function isYouTubeUrl(url: string): boolean {
+  return Object.values(YOUTUBE_PATTERNS).some(pattern => pattern.test(url));
+}
+
+export function extractYouTubeVideoId(url: string): string | null {
+  for (const pattern of Object.values(YOUTUBE_PATTERNS)) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      const videoId = match[1];
+      if (VIDEO_ID_REGEX.test(videoId)) {
+        return videoId;
+      }
+    }
+  }
+  return null;
+}
+
+export function normalizeYouTubeUrl(url: string): string | null {
+  const videoId = extractYouTubeVideoId(url);
+  if (!videoId) {
+    return null;
+  }
+  return `https://www.youtube.com/watch?v=${videoId}`;
 }

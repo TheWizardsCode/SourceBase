@@ -4,6 +4,7 @@ export interface LinkRecord {
   title?: string | null;
   summary?: string | null;
   content?: string | null;
+  transcript?: string | null;
   imageUrl?: string | null;
   metadata?: Record<string, unknown>;
   embedding?: number[] | null;
@@ -16,6 +17,7 @@ export interface StoredLink {
   title: string | null;
   summary: string | null;
   content: string | null;
+  transcript: string | null;
   imageUrl: string | null;
   metadata: Record<string, unknown>;
   firstSeenAt: string;
@@ -183,6 +185,7 @@ interface StoredLinkRow {
   title: string | null;
   summary: string | null;
   content: string | null;
+  transcript: string | null;
   image_url: string | null;
   metadata: Record<string, unknown>;
   first_seen_at: Date | string;
@@ -199,6 +202,7 @@ function mapStoredLink(row: StoredLinkRow): StoredLink {
     title: row.title,
     summary: row.summary,
     content: row.content,
+    transcript: row.transcript,
     imageUrl: row.image_url,
     metadata: row.metadata,
     firstSeenAt: row.first_seen_at instanceof Date ? row.first_seen_at.toISOString() : String(row.first_seen_at),

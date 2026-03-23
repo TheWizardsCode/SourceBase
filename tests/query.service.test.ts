@@ -46,6 +46,7 @@ function createLink(url: string, title: string, summary: string): StoredLink {
     title,
     summary,
     content: null,
+    transcript: null,
     imageUrl: null,
     metadata: {},
     firstSeenAt: new Date().toISOString(),

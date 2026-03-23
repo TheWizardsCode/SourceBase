@@ -10,6 +10,32 @@ export interface LinkStore {
   upsertLink(link: LinkRecord): Promise<unknown>;
 }
 
+export type ProgressPhase = 
+  | "downloading"
+  | "extracting_links" 
+  | "storing"
+  | "completed"
+  | "failed";
+
+export interface ProgressUpdate {
+  phase: ProgressPhase;
+  url: string;
+  current: number;
+  total: number;
+  message?: string;
+}
+
+export interface IngestionProgress {
+  urls: string[];
+  completed: number;
+  failed: number;
+  currentUrl: string | null;
+  phase: ProgressPhase;
+  messageId?: string;
+}
+
+export type ProgressCallback = (update: ProgressUpdate, overall: IngestionProgress, messageId?: string) => void | Promise<void>;
+
 export interface IngestionServiceOptions {
   repository: LinkStore;
   extractor: ContentExtractor;
@@ -30,6 +56,8 @@ export interface IngestionServiceOptions {
     collection: string;
     indexBatch(collection: string, items: { id: number; vector: number[] }[]): Promise<void>;
   };
+  // Optional progress callback for real-time status updates
+  onProgress?: ProgressCallback;
 }
 
 export class IngestionService {
@@ -77,11 +105,43 @@ export class IngestionService {
       return sum.map(v => v / vectors.length);
     }
 
-    async ingestMessage(message: Message): Promise<void> {
+    private async reportProgress(
+      update: ProgressUpdate,
+      overall: IngestionProgress
+    ): Promise<void> {
+      if (this.options.onProgress) {
+        try {
+          await this.options.onProgress(update, overall, overall.messageId);
+        } catch (err) {
+          this.options.logger.warn("Progress callback failed", {
+            error: err instanceof Error ? err.message : String(err)
+          });
+        }
+      }
+    }
+
+    async ingestMessage(
+      message: Message,
+      progressContext?: { urls: string[]; currentIndex: number }
+    ): Promise<void> {
       const urls = extractUrls(message.content);
       if (!urls.length) {
         return;
       }
+
+      const isCrawl = !!progressContext;
+      const allUrls = progressContext?.urls ?? urls;
+      const baseIndex = progressContext?.currentIndex ?? 0;
+
+      // Initialize progress tracking with message ID
+      const progress: IngestionProgress = {
+        urls: allUrls,
+        completed: 0,
+        failed: 0,
+        currentUrl: null,
+        phase: "downloading",
+        messageId: message.id
+      };
 
       // Add an "eyes" reaction to indicate the bot is processing this message
       await message.react("👀");
@@ -89,21 +149,44 @@ export class IngestionService {
       // Capture the bot's user ID for later reaction removal (used later)
       const botUserId = message.client?.user?.id;
 
-      for (const url of urls) {
+      for (let i = 0; i < urls.length; i++) {
+        const url = urls[i];
+        const currentIndex = baseIndex + i;
+        progress.currentUrl = url;
+
         try {
           this.options.logger.info("Start processing URL", { url, messageId: message.id });
-          
+
+          // Report downloading phase
+          await this.reportProgress(
+            { phase: "downloading", url, current: currentIndex + 1, total: allUrls.length },
+            progress
+          );
+
           // Check if this is a YouTube URL
           if (isYouTubeUrl(url) && this.options.youtubeClient?.isConfigured()) {
-            await this.ingestYouTubeUrl(url, message);
+            await this.ingestYouTubeUrl(url, message, currentIndex + 1, allUrls.length, progress);
+            progress.completed++;
+            progress.phase = "completed";
+            await this.reportProgress(
+              { phase: "completed", url, current: currentIndex + 1, total: allUrls.length },
+              progress
+            );
             continue;
           }
-          
+
           const extracted = await this.options.extractor.extract(url);
           this.options.logger.debug("Extraction result", { url, title: extracted?.title, contentLength: extracted?.content?.length ?? 0 });
           if (!extracted) {
             throw new Error("No extractable article content returned");
           }
+
+          // Report extracting phase
+          progress.phase = "extracting_links";
+          await this.reportProgress(
+            { phase: "extracting_links", url, current: currentIndex + 1, total: allUrls.length },
+            progress
+          );
 
           // ----- Summarisation (with chunking) -----
           const baseTextForLlm = [extracted.title, extracted.content]
@@ -195,6 +278,13 @@ export class IngestionService {
             if (embedding) this.options.logger.debug("Embedding averaged", { url, embeddingDim: embedding.length });
           }
 
+          // Report storing phase
+          progress.phase = "storing";
+          await this.reportProgress(
+            { phase: "storing", url, current: currentIndex + 1, total: allUrls.length },
+            progress
+          );
+
           const stored: any = await this.options.repository.upsertLink({
             url,
             title: extracted.title,
@@ -234,14 +324,24 @@ export class IngestionService {
             messageId: message.id
           });
 
-          // Remove eyes reaction before adding final success reaction
-          if (botUserId) {
-            const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
-            if (eyesReaction) {
-              await eyesReaction.users.remove(botUserId);
+          progress.completed++;
+          progress.phase = "completed";
+          await this.reportProgress(
+            { phase: "completed", url, current: currentIndex + 1, total: allUrls.length },
+            progress
+          );
+
+          // Only remove eyes and add success reaction for non-crawl or last URL
+          if (!isCrawl || i === urls.length - 1) {
+            // Remove eyes reaction before adding final success reaction
+            if (botUserId) {
+              const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
+              if (eyesReaction) {
+                await eyesReaction.users.remove(botUserId);
+              }
             }
+            await message.react(this.options.successReaction);
           }
-          await message.react(this.options.successReaction);
         } catch (error) {
           this.options.logger.warn('Failed to ingest URL', {
             url,
@@ -249,25 +349,47 @@ export class IngestionService {
             error: error instanceof Error ? error.message : String(error)
           });
 
-          // Remove eyes reaction before adding failure reaction
-          if (botUserId) {
-            const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
-            if (eyesReaction) {
-              await eyesReaction.users.remove(botUserId);
+          progress.failed++;
+          progress.phase = "failed";
+          await this.reportProgress(
+            { phase: "failed", url, current: currentIndex + 1, total: allUrls.length, message: error instanceof Error ? error.message : String(error) },
+            progress
+          );
+
+          // Only remove eyes and add failure reaction for non-crawl or last URL
+          if (!isCrawl || i === urls.length - 1) {
+            // Remove eyes reaction before adding failure reaction
+            if (botUserId) {
+              const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
+              if (eyesReaction) {
+                await eyesReaction.users.remove(botUserId);
+              }
             }
+            await message.react(this.options.failureReaction);
           }
-          await message.react(this.options.failureReaction);
         }
       }
     }
 
-    private async ingestYouTubeUrl(url: string, message: Message): Promise<void> {
+    private async ingestYouTubeUrl(
+      url: string,
+      message: Message,
+      currentIndex: number,
+      totalUrls: number,
+      progress: IngestionProgress
+    ): Promise<void> {
       const videoId = extractYouTubeVideoId(url);
       if (!videoId) {
         throw new Error("Failed to extract YouTube video ID");
       }
 
       this.options.logger.info("Processing YouTube URL", { url, videoId });
+
+      // Report downloading phase for metadata
+      await this.reportProgress(
+        { phase: "downloading", url, current: currentIndex, total: totalUrls },
+        progress
+      );
 
       // Fetch metadata from YouTube API
       const metadata = await this.options.youtubeClient!.fetchVideoMetadata(videoId);
@@ -279,27 +401,41 @@ export class IngestionService {
       const captionsResult = await this.options.youtubeClient!.fetchCaptions(videoId);
       const transcript = captionsResult?.transcript ?? null;
 
+      // Report extracting phase
+      progress.phase = "extracting_links";
+      await this.reportProgress(
+        { phase: "extracting_links", url, current: currentIndex, total: totalUrls },
+        progress
+      );
+
       // Generate summary using transcript if available, otherwise use metadata
       let content: string;
       if (transcript) {
         content = [metadata.title, transcript].filter(Boolean).join("\n\n").trim();
-        this.options.logger.info("Using transcript for YouTube summary", { 
-          url, 
-          videoId, 
+        this.options.logger.info("Using transcript for YouTube summary", {
+          url,
+          videoId,
           transcriptLength: transcript.length,
-          language: captionsResult?.language 
+          language: captionsResult?.language
         });
       } else {
         content = [metadata.title, metadata.description].filter(Boolean).join("\n\n").trim();
       }
-      
+
       const summary = content ? await this.options.summarizer.summarize(content) : null;
-      
+
       // Generate embedding from best available content
-      const embeddingText = transcript 
+      const embeddingText = transcript
         ? [metadata.title, transcript].filter(Boolean).join("\n\n").trim()
         : [metadata.title, summary, metadata.description].filter(Boolean).join("\n\n").trim();
       const embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
+
+      // Report storing phase
+      progress.phase = "storing";
+      await this.reportProgress(
+        { phase: "storing", url, current: currentIndex, total: totalUrls },
+        progress
+      );
 
       await this.options.repository.upsertLink({
         url,

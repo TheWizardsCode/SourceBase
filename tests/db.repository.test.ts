@@ -91,6 +91,7 @@ type LinkRow = {
   title: string | null;
   summary: string | null;
   content: string | null;
+  transcript: string | null;
   image_url: string | null;
   metadata: Record<string, unknown>;
   first_seen_at: string;
@@ -119,9 +120,10 @@ function createFakePool(): Queryable {
             title: (params[2] as string | null) ?? null,
             summary: (params[3] as string | null) ?? null,
             content: (params[4] as string | null) ?? null,
-            image_url: (params[5] as string | null) ?? null,
-            metadata: JSON.parse(String(params[6])) as Record<string, unknown>,
-            embedding: (params[7] as string | null) ?? existing.embedding,
+            transcript: (params[5] as string | null) ?? existing.transcript,
+            image_url: (params[6] as string | null) ?? null,
+            metadata: JSON.parse(String(params[7])) as Record<string, unknown>,
+            embedding: (params[8] as string | null) ?? existing.embedding,
             last_seen_at: now,
             updated_at: now
           };
@@ -137,9 +139,10 @@ function createFakePool(): Queryable {
           title: (params[2] as string | null) ?? null,
           summary: (params[3] as string | null) ?? null,
           content: (params[4] as string | null) ?? null,
-          image_url: (params[5] as string | null) ?? null,
-          metadata: JSON.parse(String(params[6])) as Record<string, unknown>,
-          embedding: (params[7] as string | null) ?? null,
+          transcript: (params[5] as string | null) ?? null,
+          image_url: (params[6] as string | null) ?? null,
+          metadata: JSON.parse(String(params[7])) as Record<string, unknown>,
+          embedding: (params[8] as string | null) ?? null,
           first_seen_at: now,
           last_seen_at: now,
           created_at: now,

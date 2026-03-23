@@ -4,6 +4,7 @@ export interface LinkRecord {
   title?: string | null;
   summary?: string | null;
   content?: string | null;
+  transcript?: string | null;
   imageUrl?: string | null;
   metadata?: Record<string, unknown>;
   embedding?: number[] | null;
@@ -16,6 +17,7 @@ export interface StoredLink {
   title: string | null;
   summary: string | null;
   content: string | null;
+  transcript: string | null;
   imageUrl: string | null;
   metadata: Record<string, unknown>;
   firstSeenAt: string;
@@ -41,6 +43,7 @@ export class LinkRepository {
         title,
         summary,
         content,
+        transcript,
         image_url,
         metadata,
         embedding,
@@ -49,13 +52,14 @@ export class LinkRepository {
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::vector, now(), now(), now(), now())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::vector, now(), now(), now(), now())
       ON CONFLICT (url)
       DO UPDATE SET
         canonical_url = EXCLUDED.canonical_url,
         title = EXCLUDED.title,
         summary = EXCLUDED.summary,
         content = EXCLUDED.content,
+        transcript = COALESCE(EXCLUDED.transcript, links.transcript),
         image_url = EXCLUDED.image_url,
         metadata = EXCLUDED.metadata,
         embedding = COALESCE(EXCLUDED.embedding, links.embedding),
@@ -68,6 +72,7 @@ export class LinkRepository {
         title,
         summary,
         content,
+        transcript,
         image_url,
         metadata,
         first_seen_at,
@@ -81,6 +86,7 @@ export class LinkRepository {
         link.title ?? null,
         link.summary ?? null,
         link.content ?? null,
+        link.transcript ?? null,
         link.imageUrl ?? null,
         JSON.stringify(link.metadata ?? {}),
         embeddingLiteral
@@ -183,6 +189,7 @@ interface StoredLinkRow {
   title: string | null;
   summary: string | null;
   content: string | null;
+  transcript: string | null;
   image_url: string | null;
   metadata: Record<string, unknown>;
   first_seen_at: Date | string;
@@ -199,6 +206,7 @@ function mapStoredLink(row: StoredLinkRow): StoredLink {
     title: row.title,
     summary: row.summary,
     content: row.content,
+    transcript: row.transcript,
     imageUrl: row.image_url,
     metadata: row.metadata,
     firstSeenAt: row.first_seen_at instanceof Date ? row.first_seen_at.toISOString() : String(row.first_seen_at),

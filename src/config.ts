@@ -10,9 +10,16 @@ const configSchema = z.object({
   LLM_MODEL: z.string().min(1).default("gpt-4o-mini"),
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
   LLM_RETRY_DELAY_MS: z.coerce.number().int().min(0).default(250),
+  // Summarizer tuning (tokens ~= characters/4)
+  SUMMARIZER_MAX_TOKENS: z.coerce.number().int().min(1).default(64000),
+  SUMMARIZER_CHUNK_CHARS: z.coerce.number().int().min(1).default(32000),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  QDRANT_URL: z.string().url().default("http://127.0.0.1:6333"),
+  QDRANT_COLLECTION: z.string().min(1).default("links_vectors"),
   INGEST_SUCCESS_REACTION: z.string().min(1).default("✅"),
   INGEST_FAILURE_REACTION: z.string().min(1).default("⚠️"),
+  CRAWL_USER_AGENT: z.string().min(1).default("SourceBaseBot"),
+  CRAWL_DELAY_MS: z.coerce.number().int().min(0).default(1000),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   // YouTube configuration
   YOUTUBE_API_KEY: z.string().optional(),

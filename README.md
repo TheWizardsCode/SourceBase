@@ -1,76 +1,249 @@
 # Discord Link Aggregation Bot
 
-TypeScript Discord bot scaffold for monitoring a channel and indexing shared links.
+TypeScript Discord bot for monitoring a channel and indexing shared links with semantic search capabilities.
+
+## Features
+
+- 🔗 **Link Ingestion**: Extracts and stores URLs from Discord messages
+- 📺 **YouTube Support**: Full support for YouTube videos with metadata, captions, and transcripts
+- 🧠 **AI-Powered**: Generates summaries and embeddings using LLM (Ollama/OpenAI compatible)
+- 🔍 **Semantic Search**: Search links by meaning, not just keywords
+- 📊 **Backfill Queue**: Automatic retry for failed operations with SLA tracking
+- 🎭 **Discord Reactions**: Success/failure feedback on message processing
 
 ## Requirements
 
 - Node.js 20+
 - npm 10+
+- PostgreSQL 14+ with pgvector extension
+- (Optional) Ollama or OpenAI-compatible API for LLM features
 
-## Local setup
+## Local Setup
 
-1. Install dependencies:
+1. **Install dependencies:**
 
-   `npm install`
+   ```bash
+   npm install
+   ```
 
-2. Copy environment template:
+2. **Copy environment template:**
 
-   `cp .env.example .env`
+   ```bash
+   cp .env.example .env
+   ```
 
-3. Fill in required values in `.env`:
+3. **Fill in required values in `.env`:**
 
-- `DISCORD_BOT_TOKEN`
-- `DISCORD_CHANNEL_ID`
-- `DATABASE_URL`
-- `LLM_BASE_URL`
-- `LLM_MODEL`
+   Required:
+   - `DISCORD_BOT_TOKEN` - From Discord Developer Portal
+   - `DISCORD_CHANNEL_ID` - Channel to monitor
+   - `DATABASE_URL` - PostgreSQL connection string
+   - `LLM_BASE_URL` - e.g., `http://localhost:11434/v1` for Ollama
+   - `LLM_MODEL` - e.g., `llama3.2` or `gpt-4o-mini`
+
+   Optional (for YouTube support):
+   - `YOUTUBE_API_KEY` - From Google Cloud Console
+   - `YOUTUBE_CAPTION_LANGUAGE` - Preferred caption language (default: `en`)
+   - `ENABLE_YOUTUBE_CAPTIONS` - Enable/disable captions (default: `true`)
+
+4. **Set up the database:**
+
+   ```bash
+   npm run db:migrate
+   ```
+
+5. **Run the bot:**
+
+   ```bash
+   npm run start:dev
+   ```
 
 ## Scripts
 
-- `npm run start:dev` - Run bot in watch mode with TypeScript.
-- `npm run build` - Compile TypeScript into `dist/`.
-- `npm run start` - Run compiled bot from `dist/`.
-- `npm run lint` - Type check without emitting files.
-- `npm run test` - Run unit tests.
-- `npm run db:migrate` - Apply SQL migrations to the configured PostgreSQL database.
+- `npm run start:dev` - Run bot in watch mode with TypeScript
+- `npm run build` - Compile TypeScript into `dist/`
+- `npm run start` - Run compiled bot from `dist/`
+- `npm run lint` - Type check without emitting files
+- `npm run test` - Run unit tests
+- `npm run db:migrate` - Apply SQL migrations to PostgreSQL
 
-## Current status
+## YouTube Ingestion
 
-This repository currently provides:
+The bot provides enhanced support for YouTube URLs with the following features:
 
-- Environment-based configuration loading and validation
-- Discord client bootstrap with monitored channel filtering
-- Basic structured logger utility
-- Initial unit tests for logger behavior
-- URL extraction from Discord messages
-- Article extraction using `@extractus/article-extractor`
-- Ingestion flow with DB upsert and failure reactions
+### Supported URL Formats
 
-Further work for link extraction, database persistence, LLM integration, and semantic search is tracked in child work items under the parent epic.
+- Standard: `https://youtube.com/watch?v=VIDEO_ID`
+- Short: `https://youtu.be/VIDEO_ID`
+- Shorts: `https://youtube.com/shorts/VIDEO_ID`
+- Live: `https://youtube.com/live/VIDEO_ID`
+- Embed: `https://youtube.com/embed/VIDEO_ID`
+- Mobile: `https://m.youtube.com/watch?v=VIDEO_ID`
+- Music: `https://music.youtube.com/watch?v=VIDEO_ID`
+
+### Features
+
+1. **Metadata Extraction** (requires `YOUTUBE_API_KEY`):
+   - Video title and description
+   - Channel name
+   - Published date
+   - Thumbnail (highest quality available)
+
+2. **Caption/Transcript Fetching** (optional):
+   - Automatic caption download when available
+   - Language fallback: preferred → English → any
+   - Auto-generated caption detection
+   - Stored in `transcript` field for LLM processing
+
+3. **LLM Enhancement**:
+   - Summaries generated from transcript when available (better quality)
+   - Embeddings use transcript text for semantic search
+   - Fallback to metadata when captions unavailable
+
+4. **Rate Limiting**:
+   - Exponential backoff on YouTube API rate limits
+   - Retry-After header support
+   - Max 3 retries per request
+
+### Setup
+
+1. Get a YouTube Data API v3 key:
+   - Visit [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   - Create a new project or select existing
+   - Enable "YouTube Data API v3"
+   - Create credentials → API Key
+   - Copy the key to `YOUTUBE_API_KEY` in `.env`
+
+2. Configure caption preferences:
+   ```env
+   YOUTUBE_CAPTION_LANGUAGE=en
+   ENABLE_YOUTUBE_CAPTIONS=true
+   ```
+
+### Troubleshooting
+
+**Issue**: YouTube URLs not being processed
+- Check `YOUTUBE_API_KEY` is set correctly
+- Verify API key has YouTube Data API v3 enabled
+- Check logs for quota exceeded errors
+
+**Issue**: Captions not being fetched
+- Not all videos have captions (especially non-English)
+- Check `ENABLE_YOUTUBE_CAPTIONS=true` in `.env`
+- Verify video has captions available on YouTube
+
+**Issue**: Rate limit errors
+- YouTube API has quota limits (10,000 units/day for free tier)
+- Bot implements exponential backoff automatically
+- Consider caching or reducing ingestion frequency
+
+## Backfill Queue
+
+Failed operations (embeddings, summaries, transcripts) are automatically queued for retry:
+
+- **Queue Table**: `backfill_queue` tracks pending items
+- **SLA**: 24-hour maximum from creation to completion
+- **Retry Logic**: Up to 3 attempts with exponential backoff
+- **Processing**: Hourly by default (configurable via `BACKFILL_INTERVAL_MS`)
+- **Metrics**: Track queue depth, success rate, SLA violations
+
+### Configuration
+
+```env
+BACKFILL_INTERVAL_MS=3600000  # 1 hour in milliseconds
+MAX_BACKFILL_ATTEMPTS=3       # Max retry attempts
+```
 
 ## Database
 
-The storage layer uses PostgreSQL with pgvector and includes:
+The storage layer uses PostgreSQL with pgvector:
 
-- `migrations/001_initial_schema.sql` to create `links`, `app_checkpoints`, and indexes
-- `src/db/migrate.ts` migration runner with a `schema_migrations` table
-- `src/db/repository.ts` repository helpers for:
-  - link upsert-by-URL (duplicate handling)
-  - link lookup by URL
-  - save/load checkpoint by Discord channel
+- `migrations/001_initial_schema.sql` - Core tables and indexes
+- `migrations/003_add_transcript_column.sql` - YouTube transcript support
+- `migrations/004_backfill_queue.sql` - Backfill queue tracking
 
-## Ingestion pipeline
+Key tables:
+- `links` - Stored links with metadata, summaries, embeddings
+- `backfill_queue` - Pending retry operations
+- `app_checkpoints` - Processing state per channel
 
-- URL detection uses `src/ingestion/url.ts`
-- Content extraction uses `src/ingestion/extractor.ts` (`@extractus/article-extractor`)
-- Ingestion orchestration uses `src/ingestion/service.ts`
-- On successful ingestion, the bot reacts with `INGEST_SUCCESS_REACTION`
-- On extraction/storage failure, the bot reacts to the source message with `INGEST_FAILURE_REACTION`
+## Ingestion Pipeline
 
-## LLM integration
+1. **URL Detection** (`src/ingestion/url.ts`):
+   - Extract URLs from Discord messages
+   - Detect YouTube URLs and normalize to canonical format
 
-- LLM proxy client in `src/llm/client.ts` supports:
-  - summary generation via chat completions
-  - embedding generation via embeddings endpoint
-  - configurable retries (`LLM_MAX_RETRIES`, `LLM_RETRY_DELAY_MS`)
-- Ingestion now stores both generated summary and embedding vectors for extracted links
+2. **Content Extraction**:
+   - YouTube: Fetch metadata via YouTube Data API
+   - Generic: Use `@extractus/article-extractor`
+   - Captions: Download via youtube-transcript
+
+3. **LLM Processing**:
+   - Generate summary (using transcript if available)
+   - Create embedding vector for semantic search
+
+4. **Storage**:
+   - Upsert to PostgreSQL with pgvector
+   - Update backfill queue on failures
+   - React to Discord message with success/failure emoji
+
+## Observability
+
+### Logging
+
+Structured logging throughout the pipeline:
+- `ingestion.youtube` - YouTube-specific operations
+- `ingestion.backfill` - Queue processing
+- `llm.*` - LLM operations
+- `db.*` - Database operations
+
+Set `LOG_LEVEL` to control verbosity:
+- `error` - Errors only
+- `warn` - Warnings and errors
+- `info` - Standard operational logs (default)
+- `debug` - Verbose debugging
+
+### Metrics
+
+The backfill service tracks:
+- Queue depth (pending items)
+- Processed today
+- Failed today
+- SLA violations
+
+Access via `BackfillService.getMetrics()`
+
+## Architecture
+
+```
+Discord Message
+    ↓
+URL Extraction (youtube.ts, url.ts)
+    ↓
+Content Fetch (YouTube API / Article Extractor)
+    ↓
+LLM Processing (summarize + embed)
+    ↓
+PostgreSQL + pgvector
+    ↓
+Discord Reaction
+```
+
+## Testing
+
+Run the test suite:
+
+```bash
+npm test
+```
+
+Test coverage includes:
+- URL extraction and normalization
+- YouTube API client (mocked)
+- Caption fetching (mocked)
+- Backfill queue operations
+- Database repository
+
+## License
+
+MIT

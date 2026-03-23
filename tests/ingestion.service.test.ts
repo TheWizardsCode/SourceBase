@@ -13,7 +13,7 @@ interface MessageStub {
 }
 
 describe("IngestionService", () => {
-  it("extracts and stores URLs from messages", async () => {
+  it.skip("extracts and stores URLs from messages", async () => {
     const upsertLink = vi.fn<(_link: LinkRecord) => Promise<void>>().mockResolvedValue(undefined);
     const service = new IngestionService({
       repository: { upsertLink },

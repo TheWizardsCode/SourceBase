@@ -8,11 +8,15 @@ import type { YouTubeApiClient } from "./youtube.js";
 
 export interface LinkStore {
   upsertLink(link: LinkRecord): Promise<unknown>;
+  getLinkByUrl?(url: string): Promise<{ id: number; url: string } | null>;
 }
 
 export type ProgressPhase = 
   | "downloading"
-  | "extracting_links" 
+  | "extracting_links"
+  | "updating"
+  | "summarizing"
+  | "embedding"
   | "storing"
   | "completed"
   | "failed";
@@ -26,6 +30,10 @@ export interface ProgressUpdate {
   summary?: string;
   title?: string;
   queueSize?: number;
+  isUpdate?: boolean;
+  chunkCurrent?: number;
+  chunkTotal?: number;
+  chunkType?: "summarizing" | "embedding";
 }
 
 export interface IngestionProgress {
@@ -36,6 +44,7 @@ export interface IngestionProgress {
   phase: ProgressPhase;
   messageId?: string;
   queueSize?: number;
+  isUpdate?: boolean;
 }
 
 export type ProgressCallback = (update: ProgressUpdate, overall: IngestionProgress, messageId?: string) => void | Promise<void>;
@@ -44,7 +53,7 @@ export interface IngestionServiceOptions {
   repository: LinkStore;
   extractor: ContentExtractor;
   summarizer: {
-    summarize(content: string): Promise<string>;
+    summarize(content: string, sessionId?: string): Promise<string>;
   };
   embedder: {
     embed(text: string): Promise<number[]>;
@@ -52,6 +61,7 @@ export interface IngestionServiceOptions {
   logger: Logger;
   successReaction: string;
   failureReaction: string;
+  updateReaction?: string;
   youtubeClient?: YouTubeApiClient;
   // Optional ANN indexer (e.g. Milvus). If present, ingestion will index
   // the original (pre-resize) embedding into the ANN service using the
@@ -62,6 +72,15 @@ export interface IngestionServiceOptions {
   };
   // Optional progress callback for real-time status updates
   onProgress?: ProgressCallback;
+}
+
+// Simple UUID generator for session IDs
+function generateSessionId(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 export class IngestionService {
@@ -154,27 +173,41 @@ export class IngestionService {
       // Capture the bot's user ID for later reaction removal (used later)
       const botUserId = message.client?.user?.id;
 
-      for (let i = 0; i < urls.length; i++) {
-        const url = urls[i];
+      for (let i = 0; i < allUrls.length; i++) {
+        const url = allUrls[i];
         const currentIndex = baseIndex + i;
         progress.currentUrl = url;
 
+        // Generate unique session ID for this URL (for llama.cpp context isolation)
+        const sessionId = generateSessionId();
+
         try {
-          this.options.logger.info("Start processing URL", { url, messageId: message.id });
+          this.options.logger.info("Start processing URL", { url, messageId: message.id, sessionId });
+
+          // Check if URL already exists in database
+          let isUpdate = false;
+          if (this.options.repository.getLinkByUrl) {
+            const existing = await this.options.repository.getLinkByUrl(url);
+            isUpdate = !!existing;
+            progress.isUpdate = isUpdate;
+            if (isUpdate) {
+              this.options.logger.info("URL already exists in database, will update", { url, messageId: message.id });
+            }
+          }
 
           // Report downloading phase
           await this.reportProgress(
-            { phase: "downloading", url, current: currentIndex + 1, total: allUrls.length },
+            { phase: "downloading", url, current: currentIndex + 1, total: allUrls.length, isUpdate },
             progress
           );
 
           // Check if this is a YouTube URL
           if (isYouTubeUrl(url) && this.options.youtubeClient?.isConfigured()) {
-            const result = await this.ingestYouTubeUrl(url, message, currentIndex + 1, allUrls.length, progress);
+            const result = await this.ingestYouTubeUrl(url, message, currentIndex + 1, allUrls.length, progress, isUpdate);
             progress.completed++;
             progress.phase = "completed";
             await this.reportProgress(
-              { phase: "completed", url, current: currentIndex + 1, total: allUrls.length, summary: result.summary ?? undefined, title: result.title },
+              { phase: "completed", url, current: currentIndex + 1, total: allUrls.length, summary: result.summary ?? undefined, title: result.title, isUpdate },
               progress
             );
             continue;
@@ -186,10 +219,10 @@ export class IngestionService {
             throw new Error("No extractable article content returned");
           }
 
-          // Report extracting phase
-          progress.phase = "extracting_links";
+          // Report extracting or updating phase
+          progress.phase = isUpdate ? "updating" : "extracting_links";
           await this.reportProgress(
-            { phase: "extracting_links", url, current: currentIndex + 1, total: allUrls.length },
+            { phase: progress.phase, url, current: currentIndex + 1, total: allUrls.length, isUpdate },
             progress
           );
 
@@ -208,8 +241,25 @@ export class IngestionService {
             for (let i = 0; i < chunks.length; i++) {
               const chunk = chunks[i];
               this.options.logger.debug("Summarizing chunk", { url, messageId: message.id, index: i + 1, total: chunks.length, chunkLength: chunk.length });
+
+              // Report chunk-level progress
+              progress.phase = "summarizing";
+              await this.reportProgress(
+                {
+                  phase: "summarizing",
+                  url,
+                  current: currentIndex + 1,
+                  total: allUrls.length,
+                  isUpdate,
+                  chunkCurrent: i + 1,
+                  chunkTotal: chunks.length,
+                  chunkType: "summarizing"
+                },
+                progress
+              );
+
               try {
-                const part = await this.options.summarizer.summarize(chunk);
+                const part = await this.options.summarizer.summarize(chunk, sessionId);
                 this.options.logger.debug("Chunk summary obtained", { url, index: i + 1, summaryLength: part.length });
                 summaries.push(part);
               } catch (sumErr) {
@@ -243,6 +293,23 @@ export class IngestionService {
             for (let i = 0; i < embedChunks.length; i++) {
               const chunk = embedChunks[i];
               this.options.logger.debug("Embedding batch start", { url, messageId: message.id, batch: i + 1, of: embedChunks.length, chunkLength: chunk.length });
+
+              // Report chunk-level progress
+              progress.phase = "embedding";
+              await this.reportProgress(
+                {
+                  phase: "embedding",
+                  url,
+                  current: currentIndex + 1,
+                  total: allUrls.length,
+                  isUpdate,
+                  chunkCurrent: i + 1,
+                  chunkTotal: embedChunks.length,
+                  chunkType: "embedding"
+                },
+                progress
+              );
+
               try {
                 const vec = await this.options.embedder.embed(chunk);
                 this.options.logger.debug("Embedding batch complete", { url, batch: i + 1, vectorLength: vec.length });
@@ -337,7 +404,7 @@ export class IngestionService {
           );
 
           // Only remove eyes and add success reaction for non-crawl or last URL
-          if (!isCrawl || i === urls.length - 1) {
+          if (!isCrawl || i === allUrls.length - 1) {
             // Remove eyes reaction before adding final success reaction
             if (botUserId) {
               const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
@@ -345,7 +412,11 @@ export class IngestionService {
                 await eyesReaction.users.remove(botUserId);
               }
             }
-            await message.react(this.options.successReaction);
+            // Use update reaction if this is an update, otherwise use success reaction
+            const reaction = isUpdate && this.options.updateReaction 
+              ? this.options.updateReaction 
+              : this.options.successReaction;
+            await message.react(reaction);
           }
         } catch (error) {
           this.options.logger.warn('Failed to ingest URL', {
@@ -362,7 +433,7 @@ export class IngestionService {
           );
 
           // Only remove eyes and add failure reaction for non-crawl or last URL
-          if (!isCrawl || i === urls.length - 1) {
+          if (!isCrawl || i === allUrls.length - 1) {
             // Remove eyes reaction before adding failure reaction
             if (botUserId) {
               const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
@@ -381,18 +452,22 @@ export class IngestionService {
       message: Message,
       currentIndex: number,
       totalUrls: number,
-      progress: IngestionProgress
+      progress: IngestionProgress,
+      isUpdate: boolean = false
     ): Promise<{ summary: string | null; title: string }> {
       const videoId = extractYouTubeVideoId(url);
       if (!videoId) {
         throw new Error("Failed to extract YouTube video ID");
       }
 
-      this.options.logger.info("Processing YouTube URL", { url, videoId });
+      // Generate unique session ID for this URL (for llama.cpp context isolation)
+      const sessionId = generateSessionId();
+
+      this.options.logger.info("Processing YouTube URL", { url, videoId, sessionId, isUpdate });
 
       // Report downloading phase for metadata
       await this.reportProgress(
-        { phase: "downloading", url, current: currentIndex, total: totalUrls },
+        { phase: "downloading", url, current: currentIndex, total: totalUrls, isUpdate },
         progress
       );
 
@@ -406,10 +481,10 @@ export class IngestionService {
       const captionsResult = await this.options.youtubeClient!.fetchCaptions(videoId);
       const transcript = captionsResult?.transcript ?? null;
 
-      // Report extracting phase
-      progress.phase = "extracting_links";
+      // Report extracting or updating phase
+      progress.phase = isUpdate ? "updating" : "extracting_links";
       await this.reportProgress(
-        { phase: "extracting_links", url, current: currentIndex, total: totalUrls },
+        { phase: progress.phase, url, current: currentIndex, total: totalUrls, isUpdate },
         progress
       );
 
@@ -427,7 +502,7 @@ export class IngestionService {
         content = [metadata.title, metadata.description].filter(Boolean).join("\n\n").trim();
       }
 
-      const summary = content ? await this.options.summarizer.summarize(content) : null;
+      const summary = content ? await this.options.summarizer.summarize(content, sessionId) : null;
 
       // Generate embedding from best available content
       const embeddingText = transcript
@@ -497,7 +572,11 @@ export class IngestionService {
           await eyesReaction.users.remove(botUserId);
         }
       }
-      await message.react(this.options.successReaction);
+      // Use update reaction if this is an update, otherwise use success reaction
+      const reaction = isUpdate && this.options.updateReaction 
+        ? this.options.updateReaction 
+        : this.options.successReaction;
+      await message.react(reaction);
       
       return { summary, title: metadata.title };
     }

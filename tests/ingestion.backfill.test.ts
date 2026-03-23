@@ -274,7 +274,8 @@ describe("BackfillService", () => {
       await (service as any).processSummaryBackfill(link);
 
       expect(mockSummarizer.summarize).toHaveBeenCalledWith(
-        expect.stringContaining("Test Title")
+        expect.stringContaining("Test Title"),
+        expect.any(String)
       );
       expect(mockRepository.upsertLink).toHaveBeenCalledWith({
         url: link.url,

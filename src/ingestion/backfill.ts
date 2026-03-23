@@ -3,6 +3,15 @@ import type { LinkRecord, LinkRepository } from "../db/repository.js";
 import type { Logger } from "../logger.js";
 import type { YouTubeApiClient } from "./youtube.js";
 
+// Simple UUID generator for session IDs
+function generateSessionId(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export interface BackfillQueueItem {
   id: number;
   url: string;
@@ -50,7 +59,7 @@ export class BackfillService {
       embed(text: string): Promise<number[]>;
     },
     private readonly summarizer: {
-      summarize(content: string): Promise<string>;
+      summarize(content: string, sessionId?: string): Promise<string>;
     },
     private readonly youtubeClient?: YouTubeApiClient
   ) {}
@@ -313,7 +322,11 @@ export class BackfillService {
       throw new Error("No content available for summary generation");
     }
 
-    const summary = await this.summarizer.summarize(content);
+    // Generate unique session ID for llama.cpp context isolation
+    const sessionId = generateSessionId();
+    this.logger.debug("Generating summary with session", { url: link.url, sessionId });
+
+    const summary = await this.summarizer.summarize(content, sessionId);
 
     await this.repository.upsertLink({
       url: link.url,

@@ -18,6 +18,7 @@ const configSchema = z.object({
   QDRANT_COLLECTION: z.string().min(1).default("links_vectors"),
   INGEST_SUCCESS_REACTION: z.string().min(1).default("✅"),
   INGEST_FAILURE_REACTION: z.string().min(1).default("⚠️"),
+  INGEST_UPDATE_REACTION: z.string().min(1).default("🔄"),
   CRAWL_USER_AGENT: z.string().min(1).default("SourceBaseBot"),
   CRAWL_DELAY_MS: z.coerce.number().int().min(0).default(1000),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

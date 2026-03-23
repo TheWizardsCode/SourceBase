@@ -2,11 +2,13 @@ import type { Message } from "discord.js";
 import { config } from "./config.js";
 import { getDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
+import { DocumentQueueRepository } from "./db/queue-repository.js";
 import { DiscordBot } from "./discord/client.js";
 import { ArticleExtractorContentExtractor } from "./ingestion/extractor.js";
 import { IngestionService } from "./ingestion/service.js";
 import type { ProgressUpdate, IngestionProgress, ProgressPhase } from "./ingestion/service.js";
-import { DocumentQueue } from "./ingestion/queue.js";
+import { DocumentQueue, type QueueUpdateStatus } from "./ingestion/queue.js";
+import { CrawlService } from "./ingestion/crawl.js";
 import { YouTubeApiClient } from "./ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "./llm/client.js";
 import { OpenAiCompatibleEmbeddingProvider } from "./llm/embeddings.js";
@@ -19,6 +21,9 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
   const phaseEmoji: Record<ProgressPhase, string> = {
     downloading: "⬇️",
     extracting_links: "🔗",
+    updating: "🔄",
+    summarizing: "✍️",
+    embedding: "🔢",
     storing: "💾",
     completed: "✅",
     failed: "❌"
@@ -27,6 +32,9 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
   const phaseLabel: Record<ProgressPhase, string> = {
     downloading: "Downloading",
     extracting_links: "Extracting",
+    updating: "Updating",
+    summarizing: "Summarizing",
+    embedding: "Embedding",
     storing: "Storing",
     completed: "Completed",
     failed: "Failed"
@@ -43,23 +51,22 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
     let summary = update.summary;
     
     // Truncate summary if needed to fit within Discord's limit
-    // Reserve space for emoji, counter, title, queue info, and newlines
-    const reservedSpace = 150;
+    // Reserve space for emoji, counter, title, and newlines
+    const reservedSpace = 100;
     if (summary.length > 2000 - reservedSpace - title.length) {
       summary = summary.slice(0, 2000 - reservedSpace - title.length - 3) + "...";
     }
     
-    let result = `${emoji} ${progressCounter}${title}\n\n${summary}`;
-    
-    // Add queue size indicator if there are more items in queue
-    if (update.queueSize && update.queueSize > 0) {
-      result += `\n\n📋 ${update.queueSize} more in queue`;
-    }
-    
-    return result;
+    return `${emoji} ${progressCounter}${title}\n\n${summary}`;
   }
 
-  let message = `${emoji} ${progressCounter}${label}: <${update.url}>`;
+  // For chunk-level progress (summarizing/embedding), show chunk info
+  if (update.chunkCurrent && update.chunkTotal && (update.phase === "summarizing" || update.phase === "embedding")) {
+    const chunkInfo = ` (chunk ${update.chunkCurrent}/${update.chunkTotal})`;
+    return `${emoji} ${progressCounter}${label}${chunkInfo}: <${update.url}>`;
+  }
+
+  let message = `${emoji} ${progressCounter}${label}: <${update.url}>`
 
   if (update.phase === "failed" && update.message) {
     message += `\n   Error: ${update.message}`;
@@ -70,11 +77,6 @@ function formatProgressMessage(update: ProgressUpdate, overall: IngestionProgres
     const failed = overall.failed;
     const total = overall.urls.length;
     message += `\n   Progress: ${completed} succeeded, ${failed} failed (${completed + failed}/${total})`;
-  }
-
-  // Add queue size indicator if there are more items in queue
-  if (update.queueSize && update.queueSize > 0) {
-    message += `\n📋 ${update.queueSize} more in queue`;
   }
 
   // Final safety check - truncate if still too long
@@ -107,6 +109,9 @@ if (youtubeClient.isConfigured()) {
 // Track status messages per Discord message
 const statusMessages = new Map<string, Message>();
 
+// Track queue status message per channel
+const queueStatusMessages = new Map<string, Message>();
+
 const ingestionService = new IngestionService({
   repository,
   extractor: new ArticleExtractorContentExtractor(),
@@ -115,6 +120,7 @@ const ingestionService = new IngestionService({
   logger,
   successReaction: config.INGEST_SUCCESS_REACTION,
   failureReaction: config.INGEST_FAILURE_REACTION,
+  updateReaction: config.INGEST_UPDATE_REACTION,
   youtubeClient,
   onProgress: async (update, overall, messageId?: string) => {
     try {
@@ -135,19 +141,46 @@ const ingestionService = new IngestionService({
         await statusMsg.edit(content);
       }
 
-      // Clean up status message tracking when done
+      // When processing is complete, delete status message and send final summary as new message
       if (update.current === update.total && (update.phase === "completed" || update.phase === "failed")) {
+        // Delete the progress status message
+        try {
+          await statusMsg.delete();
+        } catch (err) {
+          // Message might already be deleted, ignore error
+        }
+
+        // Send final summary as a new message
+        let finalContent: string;
+        if (update.phase === "completed" && update.summary) {
+          const title = update.title || "Untitled";
+          let summary = update.summary;
+          // Make title a clickable link to the original article
+          const titleLink = `[${title}](${update.url})`;
+          // Truncate summary if needed
+          const reservedSpace = 50;
+          if (summary.length > 2000 - reservedSpace - title.length) {
+            summary = summary.slice(0, 2000 - reservedSpace - title.length - 3) + "...";
+          }
+          // Use update icon for updated documents, tick for new documents
+          const icon = update.isUpdate ? "🔄" : "✅";
+          finalContent = `${icon} ${titleLink}\n\n${summary}`;
+        } else if (update.phase === "failed") {
+          finalContent = `❌ Failed to process <${update.url}>\n   Error: ${update.message || "Unknown error"}`;
+        } else {
+          finalContent = content;
+        }
+
         // Add summary line for multi-URL runs
         if (overall.urls.length > 1) {
           const summary = overall.failed > 0
             ? `\n\n📊 Final: ${overall.completed} succeeded, ${overall.failed} failed`
             : `\n\n✅ All ${overall.completed} URLs processed successfully`;
-          const queueInfo = update.queueSize && update.queueSize > 0 ? `\n📋 ${update.queueSize} more in queue` : "";
-          await statusMsg.edit(content + summary + queueInfo);
-        } else if (update.queueSize && update.queueSize > 0) {
-          // Add queue info for single URL runs too
-          await statusMsg.edit(content + `\n\n📋 ${update.queueSize} more in queue`);
+          finalContent += summary;
         }
+
+        await statusMsg.channel.send(finalContent);
+
         // Remove all entries that reference these URLs
         for (const [key] of statusMessages) {
           if (overall.urls.includes(key) || key === messageId) {
@@ -163,10 +196,79 @@ const ingestionService = new IngestionService({
   }
 });
 
+// Helper function to format queue status message
+function formatQueueMessage(url: string, queueSize: number, status: QueueUpdateStatus): string {
+  const urlDisplay = url.length > 60 ? url.slice(0, 57) + '...' : url;
+
+  if (status === 'skipped') {
+    return `⏭️ Skipping <${urlDisplay}> as it is already in the queue. Queue length: ${queueSize}`;
+  } else if (status === 'added') {
+    return `📥 Added <${urlDisplay}> to Queue. Queue length: ${queueSize}`;
+  } else {
+    return `⚙️ Processing <${urlDisplay}> from the Queue. Queue length: ${queueSize}`;
+  }
+}
+
+// Initialize crawl service
+const crawlService = new CrawlService({
+  logger,
+  maxUrls: 20, // Limit to 20 URLs per crawl
+  maxDepth: 1, // Only crawl the seed page (depth 0) and links from it (depth 1)
+  requestDelayMs: config.CRAWL_DELAY_MS,
+});
+
+// Create queue repository for persistence
+const queueRepository = new DocumentQueueRepository(getDbPool());
+
 // Create the document queue to ensure sequential processing
 const documentQueue = new DocumentQueue({
   logger,
-  ingestionService
+  ingestionService,
+  repository: queueRepository,
+  onQueueUpdate: async (item, queueSize, status) => {
+    try {
+      if (item.message.channel.type !== 'GUILD_TEXT') return;
+
+      const channelId = item.message.channelId;
+
+      // Delete previous queue status message if it exists
+      const previousMsg = queueStatusMessages.get(channelId);
+      if (previousMsg) {
+        try {
+          await previousMsg.delete();
+        } catch (err) {
+          // Message might already be deleted, ignore error
+        }
+        queueStatusMessages.delete(channelId);
+      }
+
+      // When processing starts, always create a separate progress message
+      // This happens regardless of queue size
+      if (status === 'processing') {
+        // Create a new status message for progress tracking
+        // This will be used by the onProgress callback
+        const statusMsg = await item.message.channel.send(`⏳ Processing <${item.url}>...`);
+        // Store by message ID so onProgress can find it
+        statusMessages.set(item.message.id, statusMsg);
+      }
+
+      // If queue is empty, don't post a new queue status message
+      if (queueSize === 0) {
+        return;
+      }
+
+      // Send queue status message (this stays visible)
+      const messageContent = formatQueueMessage(item.url, queueSize, status);
+
+      // Send new queue status message
+      const newQueueMsg = await item.message.channel.send(messageContent);
+      queueStatusMessages.set(channelId, newQueueMsg);
+    } catch (err) {
+      logger.warn("Failed to update queue status message", {
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
 });
 
 const bot = new DiscordBot({
@@ -194,23 +296,95 @@ const bot = new DiscordBot({
       authorId: message.author.id
     });
 
-    // Create a status message for progress reporting
-    const urls = message.content.match(/https?:\/\/[^\s]+/g) || [];
-    if (urls.length > 0 && message.channel.type === 'GUILD_TEXT') {
-      const queueSize = documentQueue.getQueueSize();
-      const queueInfo = queueSize > 0 ? ` (${queueSize} ahead in queue)` : "";
-      const statusMsg = await message.channel.send(`⏳ Queued ${urls.length} URL${urls.length > 1 ? 's' : ''}${queueInfo}...`);
-      statusMessages.set(message.id, statusMsg);
+    // Check for crawl command
+    if (crawlService.isCrawlCommand(message.content)) {
+      logger.info("Crawl command detected", { messageId: message.id });
+
+      // Send initial crawl status
+      const crawlStatusMsg = await message.channel.send("🔍 Starting crawl...");
+      const discoveredUrlsList: string[] = [];
+
+      try {
+        // Create a temporary crawl service with progress callback
+        const progressCrawlService = new CrawlService({
+          logger,
+          maxUrls: 20,
+          maxDepth: 1,
+          requestDelayMs: config.CRAWL_DELAY_MS,
+          onProgress: async (progress) => {
+            if (progress.phase === "crawling") {
+              // Build the message with current state
+              let message = `🔍 Crawling <${progress.url}>\n`;
+              if (discoveredUrlsList.length > 0) {
+                message += discoveredUrlsList.map((url, idx) => `${idx + 1}. <${url}>`).join("\n");
+              }
+              await crawlStatusMsg.edit(message);
+            } else if (progress.phase === "discovered") {
+              discoveredUrlsList.push(progress.url);
+              // Build the message with updated list
+              let message = `🔍 Crawling...\n`;
+              message += discoveredUrlsList.map((url, idx) => `${idx + 1}. <${url}>`).join("\n");
+              await crawlStatusMsg.edit(message);
+            } else if (progress.phase === "complete") {
+              // Final message with completion status
+              let message = `🔍 Finished URL discovery\n`;
+              if (discoveredUrlsList.length > 0) {
+                message += discoveredUrlsList.map((url, idx) => `${idx + 1}. <${url}>`).join("\n");
+              } else {
+                message += "No URLs discovered";
+              }
+              await crawlStatusMsg.edit(message);
+            }
+          },
+        });
+
+        const result = await progressCrawlService.crawlFromMessage(message.content);
+
+        if (!result) {
+          await crawlStatusMsg.edit("❌ Invalid crawl command. Usage: `crawl https://example.com`");
+          return;
+        }
+
+        if (result.discoveredUrls.length === 0) {
+          await crawlStatusMsg.edit(`🔍 Crawl complete. No new URLs discovered from ${result.seedUrl}`);
+          return;
+        }
+
+        // Add discovered URLs to queue as a batch
+        await documentQueue.enqueueUrls(result.discoveredUrls, message);
+
+        logger.info("Crawl discovered URLs added to queue", {
+          messageId: message.id,
+          discoveredCount: result.discoveredUrls.length,
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.error("Crawl failed", { messageId: message.id, error: errorMessage });
+        await crawlStatusMsg.edit(`❌ Crawl failed: ${errorMessage}`);
+      }
+      return;
     }
 
     // Add message to queue for sequential processing
-    documentQueue.enqueue(message);
+    // Queue status will be handled by onQueueUpdate callback
+    await documentQueue.enqueue(message);
   }
 });
 
-bot.start().catch((error) => {
-  logger.error("Bot startup failed", {
-    error: error instanceof Error ? error.message : String(error)
-  });
-  process.exitCode = 1;
-});
+// Initialize the queue from database before starting
+async function startBot() {
+  try {
+    // Load any pending items from database
+    await documentQueue.initialize();
+    
+    // Start the bot
+    await bot.start();
+  } catch (error) {
+    logger.error("Bot startup failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    process.exitCode = 1;
+  }
+}
+
+startBot();

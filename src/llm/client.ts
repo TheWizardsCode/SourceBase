@@ -44,8 +44,8 @@ export class OpenAiCompatibleLlmClient {
     return response.data[0].embedding;
   }
 
-  async summarize(content: string): Promise<string> {
-    const response = await this.requestWithRetry<ChatResponse>("/chat/completions", {
+  async summarize(content: string, sessionId?: string): Promise<string> {
+    const payload: Record<string, unknown> = {
       model: this.options.model,
       temperature: 0.2,
       messages: [
@@ -59,7 +59,14 @@ export class OpenAiCompatibleLlmClient {
           content
         }
       ]
-    });
+    };
+
+    // Add session_id for llama.cpp server context isolation
+    if (sessionId) {
+      payload.session_id = sessionId;
+    }
+
+    const response = await this.requestWithRetry<ChatResponse>("/chat/completions", payload);
 
     const summary = response.choices?.[0]?.message?.content?.trim();
     if (!summary) {

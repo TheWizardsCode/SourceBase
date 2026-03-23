@@ -1,46 +1,151 @@
 import type { Message } from "discord.js";
 import type { Logger } from "../logger.js";
 import type { IngestionService } from "./service.js";
+import { DocumentQueueRepository } from "../db/queue-repository.js";
 
 export interface QueueItem {
   message: Message;
-  urls: string[];
-  currentIndex: number;
+  url: string;
+  dbId?: number;
 }
+
+export type QueueUpdateStatus = 'added' | 'processing' | 'skipped';
 
 export interface DocumentQueueOptions {
   logger: Logger;
   ingestionService: IngestionService;
+  repository: DocumentQueueRepository;
+  onQueueUpdate?: (item: QueueItem, queueSize: number, status: QueueUpdateStatus) => Promise<void>;
 }
 
 export class DocumentQueue {
   private queue: QueueItem[] = [];
-  private isProcessing = false;
   private currentItem: QueueItem | null = null;
+  private isProcessing = false;
 
   constructor(private readonly options: DocumentQueueOptions) {}
 
   /**
-   * Add a message to the processing queue
+   * Initialize the queue by loading pending items from database
    */
-  enqueue(message: Message): void {
+  async initialize(): Promise<void> {
+    this.options.logger.info("Initializing document queue from database");
+    const pendingEntries = await this.options.repository.getPending();
+    
+    for (const entry of pendingEntries) {
+      // Create a minimal message-like object with necessary fields
+      const syntheticMessage = {
+        id: entry.discordMessageId,
+        channelId: entry.discordChannelId,
+        channel: { type: 'GUILD_TEXT' },
+        author: { id: entry.discordAuthorId },
+        content: entry.url,
+        client: { user: { id: '' } },
+        react: async () => {},
+        reply: async () => {},
+      } as unknown as Message;
+
+      this.queue.push({
+        message: syntheticMessage,
+        url: entry.url,
+        dbId: entry.id,
+      });
+    }
+
+    this.options.logger.info("Loaded pending URLs from database", {
+      count: this.queue.length,
+    });
+
+    // Start processing if we have items
+    if (this.queue.length > 0) {
+      this.processQueue();
+    }
+  }
+
+  /**
+   * Add a message to the processing queue
+   * Each URL becomes a separate queue item for independent processing
+   * Checks for duplicates and skips URLs already in the queue
+   */
+  async enqueue(message: Message): Promise<void> {
     const urls = this.extractUrls(message.content);
+    await this.enqueueUrls(urls, message);
+  }
+
+  /**
+   * Add URLs directly to the queue (used for crawl discovered URLs)
+   * Checks for duplicates and skips URLs already in the queue
+   */
+  async enqueueUrls(urls: string[], message: Message): Promise<void> {
     if (urls.length === 0) {
       return;
     }
 
-    const item: QueueItem = {
-      message,
-      urls,
-      currentIndex: 0,
-    };
+    // Get currently queued URLs from database
+    const queuedUrls = await this.options.repository.getAllPendingUrls();
+    const queuedSet = new Set(queuedUrls);
 
-    this.queue.push(item);
-    this.options.logger.info("Message queued for processing", {
+    // Check for duplicates and create items for new URLs
+    const duplicateUrls: string[] = [];
+    const newItems: QueueItem[] = [];
+
+    for (const url of urls) {
+      if (queuedSet.has(url) || this.isUrlBeingProcessed(url)) {
+        duplicateUrls.push(url);
+      } else {
+        newItems.push({ message, url });
+        queuedSet.add(url);
+      }
+    }
+
+    // Report skipped duplicates
+    if (duplicateUrls.length > 0) {
+      this.options.logger.info("Skipping duplicate URLs", {
+        messageId: message.id,
+        duplicates: duplicateUrls,
+        queueSize: this.queue.length,
+      });
+
+      if (this.options.onQueueUpdate) {
+        for (const url of duplicateUrls) {
+          const skipItem: QueueItem = { message, url };
+          await this.options.onQueueUpdate(skipItem, this.queue.length, 'skipped');
+        }
+      }
+    }
+
+    // If no new URLs, we're done
+    if (newItems.length === 0) {
+      return;
+    }
+
+    // Save to database and add to queue
+    for (const item of newItems) {
+      const entry = await this.options.repository.create({
+        url: item.url,
+        discordMessageId: item.message.id,
+        discordChannelId: item.message.channelId,
+        discordAuthorId: item.message.author.id,
+      });
+      item.dbId = entry.id;
+      this.queue.push(item);
+    }
+
+    const queueSizeAfterAdd = this.queue.length;
+
+    this.options.logger.info("URLs queued for processing", {
       messageId: message.id,
-      urls: urls.length,
-      queueSize: this.queue.length,
+      urls: newItems.length,
+      skipped: duplicateUrls.length,
+      queueSize: queueSizeAfterAdd,
     });
+
+    // Notify about queue updates for each new URL
+    if (this.options.onQueueUpdate) {
+      for (const item of newItems) {
+        await this.options.onQueueUpdate(item, queueSizeAfterAdd, 'added');
+      }
+    }
 
     // Start processing if not already running
     this.processQueue();
@@ -68,6 +173,14 @@ export class DocumentQueue {
   }
 
   /**
+   * Check if a URL is currently being processed
+   */
+  private isUrlBeingProcessed(url: string): boolean {
+    if (!this.currentItem) return false;
+    return this.currentItem.url === url;
+  }
+
+  /**
    * Process items in the queue one at a time
    */
   private async processQueue(): Promise<void> {
@@ -81,23 +194,47 @@ export class DocumentQueue {
       const item = this.queue.shift()!;
       this.currentItem = item;
 
-      this.options.logger.info("Starting to process queued message", {
+      const remainingInQueue = this.queue.length;
+
+      this.options.logger.info("Starting to process queued URL", {
         messageId: item.message.id,
-        urls: item.urls.length,
-        remainingInQueue: this.queue.length,
+        url: item.url,
+        remainingInQueue,
       });
+
+      // Update database status to processing
+      if (item.dbId) {
+        await this.options.repository.markProcessing(item.dbId);
+      }
+
+      // Notify about queue update (Processing from queue)
+      if (this.options.onQueueUpdate) {
+        await this.options.onQueueUpdate(item, remainingInQueue, 'processing');
+      }
 
       try {
         await this.options.ingestionService.ingestMessage(item.message, {
-          urls: item.urls,
-          currentIndex: item.currentIndex,
-          queueSize: this.queue.length,
+          urls: [item.url],
+          currentIndex: 0,
+          queueSize: remainingInQueue,
         });
+
+        // Mark as completed in database
+        if (item.dbId) {
+          await this.options.repository.markCompleted(item.dbId);
+        }
       } catch (error) {
-        this.options.logger.error("Failed to process queued item", {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.options.logger.error("Failed to process queued URL", {
           messageId: item.message.id,
-          error: error instanceof Error ? error.message : String(error),
+          url: item.url,
+          error: errorMessage,
         });
+
+        // Mark as failed in database
+        if (item.dbId) {
+          await this.options.repository.markFailed(item.dbId, errorMessage);
+        }
       }
     }
 

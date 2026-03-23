@@ -21,4 +21,7 @@ dist/
 # Coverage
 coverage/
 
+# PostgreSQL data directory
+pgdata/
+
 ### End of Worklog Specific Ignores

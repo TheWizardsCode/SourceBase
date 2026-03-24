@@ -138,12 +138,33 @@ function createFakePool() {
         return { rowCount: 1, rows: [entry] };
       }
 
-      // SELECT pending items
-      if (sql.includes("SELECT") && sql.includes("status = 'pending'")) {
+      // SELECT pending items (with status = 'pending')
+      if (sql.includes("SELECT") && sql.includes("status = 'pending'") && !sql.includes("IN")) {
         const pending = Array.from(queueEntries.values()).filter(
           (e) => e.status === "pending"
         );
         return { rowCount: pending.length, rows: pending };
+      }
+
+      // SELECT pending and processing items (status IN ('pending', 'processing'))
+      if (sql.includes("SELECT") && sql.includes("status IN ('pending', 'processing')") && !sql.includes("SELECT url")) {
+        const pending = Array.from(queueEntries.values()).filter(
+          (e) => e.status === "pending" || e.status === "processing"
+        );
+        return { rowCount: pending.length, rows: pending };
+      }
+
+      // UPDATE processing items to pending (resetProcessingToPending)
+      if (sql.includes("UPDATE document_queue") && sql.includes("status = 'processing'")) {
+        let count = 0;
+        for (const entry of queueEntries.values()) {
+          if (entry.status === "processing") {
+            entry.status = "pending";
+            entry.updated_at = new Date().toISOString();
+            count++;
+          }
+        }
+        return { rowCount: count, rows: [] };
       }
 
       // UPDATE status to processing

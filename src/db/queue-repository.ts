@@ -37,7 +37,7 @@ export class DocumentQueueRepository {
   async getPending(): Promise<QueueEntry[]> {
     const result = await this.pool.query(
       `SELECT * FROM document_queue 
-       WHERE status = 'pending'
+       WHERE status IN ('pending', 'processing')
        ORDER BY created_at ASC`
     );
     return result.rows.map(row => this.mapRow(row));
@@ -90,6 +90,16 @@ export class DocumentQueueRepository {
       `SELECT url FROM document_queue WHERE status IN ('pending', 'processing')`
     );
     return result.rows.map(row => row.url);
+  }
+
+  async resetProcessingToPending(): Promise<number> {
+    const result = await this.pool.query(
+      `UPDATE document_queue 
+       SET status = 'pending', updated_at = NOW()
+       WHERE status = 'processing'
+       RETURNING id`
+    );
+    return result.rows.length;
   }
 
   private mapRow(row: any): QueueEntry {

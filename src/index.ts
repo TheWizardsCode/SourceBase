@@ -1,6 +1,6 @@
 import { Client, Intents, TextChannel, type Message } from "discord.js";
 import { config } from "./config.js";
-import { getDbPool } from "./db/client.js";
+import { getDbPool, closeDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
 import { DocumentQueueRepository } from "./db/queue-repository.js";
 import { DiscordBot } from "./discord/client.js";
@@ -584,5 +584,160 @@ async function restoreStatusMessages(): Promise<void> {
     channelsCached: channelCache.size,
   });
 }
+
+// Track shutdown state
+let isShuttingDown = false;
+
+// Graceful shutdown cleanup
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) {
+    logger.info("Shutdown already in progress, forcing exit");
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  logger.info(`Received ${signal}, starting graceful shutdown...`);
+
+  try {
+    // Get channels with active status messages
+    const activeChannels = new Set<string>();
+    
+    // Collect all channels with status messages
+    for (const [key, msg] of statusMessages) {
+      activeChannels.add(msg.channelId);
+    }
+    for (const [channelId] of queueStatusMessages) {
+      activeChannels.add(channelId);
+    }
+
+    // Also include channels from cached channels
+    for (const [channelId] of channelCache) {
+      activeChannels.add(channelId);
+    }
+
+    // Post maintenance notification to all active channels
+    const maintenanceMessage = "🔄 Bot Closing Down for Maintenance - Processing will resume shortly";
+    const notificationPromises: Promise<void>[] = [];
+    
+    for (const channelId of activeChannels) {
+      const channel = channelCache.get(channelId);
+      if (channel) {
+        notificationPromises.push(
+          (async () => {
+            try {
+              await channel.send(maintenanceMessage);
+              logger.debug("Posted maintenance notification", { channelId });
+            } catch (err) {
+              logger.warn("Failed to post maintenance notification", {
+                channelId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          })()
+        );
+      }
+    }
+    
+    // Wait for notifications to complete (with timeout)
+    await Promise.race([
+      Promise.all(notificationPromises),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000))
+    ]).catch(err => {
+      logger.warn("Some maintenance notifications timed out", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+    // Delete or update progress status messages
+    const progressCleanupPromises: Promise<void>[] = [];
+    for (const [key, msg] of statusMessages) {
+      progressCleanupPromises.push(
+        (async () => {
+          try {
+            await msg.edit("⏸️ Processing paused - bot restarting");
+            logger.debug("Updated progress status message", { key });
+          } catch (err) {
+            // Try to delete if edit fails
+            try {
+              await msg.delete();
+              logger.debug("Deleted progress status message", { key });
+            } catch (deleteErr) {
+              logger.warn("Failed to cleanup progress message", {
+                key,
+                error: deleteErr instanceof Error ? deleteErr.message : String(deleteErr),
+              });
+            }
+          }
+        })()
+      );
+    }
+    
+    // Delete queue status messages
+    const queueCleanupPromises: Promise<void>[] = [];
+    for (const [channelId, msg] of queueStatusMessages) {
+      queueCleanupPromises.push(
+        (async () => {
+          try {
+            await msg.edit("⏸️ Queue processing paused - bot restarting");
+            logger.debug("Updated queue status message", { channelId });
+          } catch (err) {
+            // Try to delete if edit fails
+            try {
+              await msg.delete();
+              logger.debug("Deleted queue status message", { channelId });
+            } catch (deleteErr) {
+              logger.warn("Failed to cleanup queue message", {
+                channelId,
+                error: deleteErr instanceof Error ? deleteErr.message : String(deleteErr),
+              });
+            }
+          }
+        })()
+      );
+    }
+
+    // Wait for message cleanup with timeout
+    await Promise.race([
+      Promise.all([...progressCleanupPromises, ...queueCleanupPromises]),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 10000))
+    ]).catch(err => {
+      logger.warn("Some message cleanup timed out", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+    // Re-queue current processing item if any
+    const currentItem = documentQueue.getCurrentItem();
+    if (currentItem) {
+      logger.info("Re-queuing current processing item", {
+        url: currentItem.url,
+      });
+      documentQueue.requeueCurrentItem();
+    }
+
+    // Close database connection
+    logger.info("Closing database connection...");
+    try {
+      await closeDbPool();
+      logger.info("Database connection closed successfully");
+    } catch (err) {
+      logger.error("Failed to close database connection", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    logger.info("Graceful shutdown complete");
+    process.exit(0);
+  } catch (err) {
+    logger.error("Error during graceful shutdown", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    process.exit(1);
+  }
+}
+
+// Register signal handlers
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 startBot();

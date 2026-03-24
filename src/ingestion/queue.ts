@@ -39,6 +39,15 @@ export class DocumentQueue {
    */
   async initialize(): Promise<PendingQueueItem[]> {
     this.options.logger.info("Initializing document queue from database");
+    
+    // Reset any 'processing' items to 'pending' (they were interrupted)
+    const resetCount = await this.options.repository.resetProcessingToPending();
+    if (resetCount > 0) {
+      this.options.logger.info("Reset processing items to pending", {
+        count: resetCount,
+      });
+    }
+    
     const pendingEntries = await this.options.repository.getPending();
     
     const pendingItems: PendingQueueItem[] = [];
@@ -192,6 +201,28 @@ export class DocumentQueue {
    */
   getCurrentItem(): QueueItem | null {
     return this.currentItem;
+  }
+
+  /**
+   * Re-queue the current processing item to the front of the queue.
+   * Used during graceful shutdown to preserve interrupted items.
+   */
+  requeueCurrentItem(): void {
+    if (this.currentItem) {
+      const url = this.currentItem.url;
+      this.queue.unshift(this.currentItem);
+      this.currentItem = null;
+      this.options.logger.info("Re-queued current item to front of queue", {
+        url,
+      });
+    }
+  }
+
+  /**
+   * Get all items in the queue (for graceful shutdown cleanup)
+   */
+  getQueueItems(): QueueItem[] {
+    return [...this.queue];
   }
 
   /**

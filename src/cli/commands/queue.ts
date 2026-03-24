@@ -27,11 +27,11 @@ async function queueSingleUrl(url: string): Promise<QueueResult> {
     const pool = getDbPool();
     const repository = new DocumentQueueRepository(pool);
     
-    // Create a queue entry with CLI-specific identifiers
+    // Create a queue entry with real Discord channel ID for notifications
     const entry = await repository.create({
       url,
       discordMessageId: `cli-${Date.now()}`,
-      discordChannelId: "cli",
+      discordChannelId: config.DISCORD_CHANNEL_ID,
       discordAuthorId: "cli-user"
     });
     

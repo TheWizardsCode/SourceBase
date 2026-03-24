@@ -10,6 +10,18 @@ export interface LinkRecord {
   embedding?: number[] | null;
 }
 
+export interface DatabaseStats {
+  totalLinks: number;
+  linksWithEmbeddings: number;
+  linksWithSummaries: number;
+  linksWithTranscripts: number;
+  linksWithContent: number;
+  linksLast24Hours: number;
+  linksLast7Days: number;
+  linksLast30Days: number;
+  averageEmbeddingDimensions: number;
+}
+
 export interface StoredLink {
   id: number;
   url: string;
@@ -179,6 +191,34 @@ export class LinkRepository {
     );
 
     return result.rows.map((row) => mapStoredLink(row as StoredLinkRow));
+  }
+
+  async getStats(): Promise<DatabaseStats> {
+    const result = await this.pool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM links) as total_links,
+        (SELECT COUNT(*) FROM links WHERE embedding IS NOT NULL) as links_with_embeddings,
+        (SELECT COUNT(*) FROM links WHERE summary IS NOT NULL) as links_with_summaries,
+        (SELECT COUNT(*) FROM links WHERE transcript IS NOT NULL) as links_with_transcripts,
+        (SELECT COUNT(*) FROM links WHERE content IS NOT NULL) as links_with_content,
+        (SELECT COUNT(*) FROM links WHERE created_at > NOW() - INTERVAL '24 hours') as links_last_24h,
+        (SELECT COUNT(*) FROM links WHERE created_at > NOW() - INTERVAL '7 days') as links_last_7d,
+        (SELECT COUNT(*) FROM links WHERE created_at > NOW() - INTERVAL '30 days') as links_last_30d,
+        (SELECT COALESCE(AVG(array_length(embedding, 1)), 0) FROM links WHERE embedding IS NOT NULL) as avg_embedding_dim
+    `);
+
+    const row = result.rows[0] as Record<string, string>;
+    return {
+      totalLinks: parseInt(row.total_links),
+      linksWithEmbeddings: parseInt(row.links_with_embeddings),
+      linksWithSummaries: parseInt(row.links_with_summaries),
+      linksWithTranscripts: parseInt(row.links_with_transcripts),
+      linksWithContent: parseInt(row.links_with_content),
+      linksLast24Hours: parseInt(row.links_last_24h),
+      linksLast7Days: parseInt(row.links_last_7d),
+      linksLast30Days: parseInt(row.links_last_30d),
+      averageEmbeddingDimensions: parseFloat(row.avg_embedding_dim),
+    };
   }
 }
 

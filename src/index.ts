@@ -276,6 +276,73 @@ const bot = new DiscordBot({
   token: config.DISCORD_BOT_TOKEN,
   monitoredChannelId: config.DISCORD_CHANNEL_ID,
   logger,
+  onInteraction: async (interaction) => {
+    if (!interaction.isCommand()) return;
+
+    const { commandName } = interaction;
+
+    if (commandName === "stats") {
+      await interaction.deferReply();
+
+      try {
+        const stats = await repository.getStats();
+
+        const embed = {
+          title: "📊 Database Statistics",
+          color: 0x3498db,
+          fields: [
+            {
+              name: "📚 Total Links",
+              value: stats.totalLinks.toLocaleString(),
+              inline: true
+            },
+            {
+              name: "📝 With Summaries",
+              value: `${stats.linksWithSummaries.toLocaleString()} (${((stats.linksWithSummaries / stats.totalLinks) * 100).toFixed(1)}%)`,
+              inline: true
+            },
+            {
+              name: "🔢 With Embeddings",
+              value: `${stats.linksWithEmbeddings.toLocaleString()} (${((stats.linksWithEmbeddings / stats.totalLinks) * 100).toFixed(1)}%)`,
+              inline: true
+            },
+            {
+              name: "📄 With Content",
+              value: `${stats.linksWithContent.toLocaleString()} (${((stats.linksWithContent / stats.totalLinks) * 100).toFixed(1)}%)`,
+              inline: true
+            },
+            {
+              name: "🎬 With Transcripts",
+              value: `${stats.linksWithTranscripts.toLocaleString()} (${((stats.linksWithTranscripts / stats.totalLinks) * 100).toFixed(1)}%)`,
+              inline: true
+            },
+            {
+              name: "📐 Avg Embedding Dim",
+              value: stats.averageEmbeddingDimensions.toFixed(0),
+              inline: true
+            },
+            {
+              name: "⏰ Recent Activity",
+              value: [
+                `Last 24h: ${stats.linksLast24Hours}`,
+                `Last 7d: ${stats.linksLast7Days}`,
+                `Last 30d: ${stats.linksLast30Days}`
+              ].join("\n"),
+              inline: false
+            }
+          ],
+          timestamp: new Date().toISOString()
+        };
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (error) {
+        logger.error("Failed to get stats", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        await interaction.editReply("❌ Failed to retrieve statistics");
+      }
+    }
+  },
   onMonitoredMessage: async (message) => {
     if (isLikelyContentQuery(message.content)) {
       try {

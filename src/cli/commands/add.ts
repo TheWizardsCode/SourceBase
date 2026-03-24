@@ -40,22 +40,19 @@ function validateUrl(url: string): boolean {
   }
 }
 
-function createProgressCallback(verbose: boolean): ProgressCallback {
-  return async (update: ProgressUpdate, overall: IngestionProgress) => {
-    // Only show progress in verbose mode
-    if (!verbose) {
-      return;
-    }
-    
-    // In verbose mode, output JSON for each phase
-    console.log(JSON.stringify({
-      phase: update.phase,
-      url: update.url,
-      current: update.current,
-      total: update.total,
-      message: update.message
-    }));
+function formatPhase(phase: string): string {
+  const phaseLabels: Record<string, string> = {
+    downloading: "Downloading",
+    extracting_links: "Extracting",
+    updating: "Updating",
+    summarizing: "Summarizing",
+    embedding: "Embedding",
+    storing: "Storing",
+    completed: "Completed",
+    failed: "Failed"
   };
+  
+  return phaseLabels[phase] || phase;
 }
 
 async function processSingleUrl(
@@ -84,9 +81,20 @@ async function processSingleUrl(
     let failed = false;
     let errorMsg: string | undefined;
 
-    // Create progress callback that captures the result
+    // Create progress callback that captures the result and shows phases
     const progressCallback: ProgressCallback = async (update, overall) => {
-      // In verbose mode, show JSON progress
+      // Show progress phase on console (always, not just in verbose mode)
+      if (process.stdout.isTTY && update.phase !== "completed" && update.phase !== "failed") {
+        process.stdout.write(`\r${formatPhase(update.phase)}...`);
+      } else if (update.phase === "completed" || update.phase === "failed") {
+        if (process.stdout.isTTY) {
+          process.stdout.write(`\r${formatPhase(update.phase)}      \n`);
+        } else {
+          console.log(formatPhase(update.phase));
+        }
+      }
+      
+      // In verbose mode, also show JSON details
       if (options.verbose) {
         console.log(JSON.stringify({
           phase: update.phase,
@@ -107,7 +115,7 @@ async function processSingleUrl(
       }
     };
 
-    // Create logger - silent unless verbose
+    // Create logger - silent unless verbose (suppresses JSON logging from ingestion service)
     const logger = options.verbose ? new Logger(config.LOG_LEVEL) : new SilentLogger();
 
     // Create a custom ingestion service with our progress callback

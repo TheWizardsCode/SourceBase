@@ -85,26 +85,31 @@ describe("CLI Add Command", () => {
     });
   });
   
-  describe("minimal output", () => {
-    it("should show only Added message on success without emojis", () => {
+  describe("output format", () => {
+    it("should show phases during processing and final result", () => {
       const { stdout, stderr } = runCli(["add", TEST_URLS.valid]);
       
-      // In test environment without services, it fails and outputs to stderr
-      // When services are available, success goes to stdout
-      const output = stdout || stderr;
+      const output = stdout + stderr;
       
-      // Should show simple format without emojis (either "Added:" or "Failed:")
+      // Should show phases (Downloading, Extracting, etc.) - just the phase name
+      expect(output).toMatch(/(Downloading|Extracting|Summarizing|Embedding|Storing|Completed|Failed)/);
+      
+      // Final result should show "Added:" or "Failed:" with details
       expect(output).toMatch(/(Added|Failed): .+/);
+      
+      // Should not contain emojis
       expect(output).not.toContain("✅");
       expect(output).not.toContain("⚠️");
     });
     
-    it("should show only Failed message on error without emojis", () => {
-      const { stderr } = runCli(["add", "https://example.com"]); // Will fail due to network
+    it("should show Failed message on error without emojis", () => {
+      const { stdout, stderr } = runCli(["add", "https://example.com"]);
       
-      // Should show simple "Failed:" format without emojis
-      expect(stderr).toMatch(/Failed: .+/);
-      expect(stderr).not.toContain("⚠️");
+      const output = stdout + stderr;
+      
+      // Should show phases then "Failed:" format without emojis
+      expect(output).toMatch(/Failed: .+/);
+      expect(output).not.toContain("⚠️");
     });
     
     it("should not show JSON output in non-verbose mode", () => {

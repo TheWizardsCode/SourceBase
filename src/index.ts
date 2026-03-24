@@ -286,6 +286,8 @@ const documentQueue = new DocumentQueue({
       });
     }
   }
+  // Enable polling for externally-added DB queue entries every 5s by default
+  , pollIntervalMs: Number(process.env.QUEUE_POLL_INTERVAL_MS || 5000)
 });
 
 const bot = new DiscordBot({
@@ -297,11 +299,19 @@ const bot = new DiscordBot({
 
     const { commandName } = interaction;
 
-    if (commandName === "stats") {
+  if (commandName === "stats") {
       await interaction.deferReply();
 
       try {
         const stats = await repository.getStats();
+
+        // Get pending queue count from DB (external + in-memory)
+        let dbQueueCount = 0;
+        try {
+          dbQueueCount = await queueRepository.getPendingCount();
+        } catch (err) {
+          logger.warn("Failed to get DB queue count", { error: err instanceof Error ? err.message : String(err) });
+        }
 
         const embed = {
           title: "📊 Database Statistics",
@@ -330,6 +340,16 @@ const bot = new DiscordBot({
             {
               name: "🎬 With Transcripts",
               value: `${stats.linksWithTranscripts.toLocaleString()} (${((stats.linksWithTranscripts / stats.totalLinks) * 100).toFixed(1)}%)`,
+              inline: true
+            },
+            {
+              name: "⏳ Queue Length (in-memory)",
+              value: documentQueue.getQueueSize().toString(),
+              inline: true
+            },
+            {
+              name: "📥 Pending (DB)",
+              value: dbQueueCount.toString(),
               inline: true
             },
             {
@@ -599,43 +619,97 @@ async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal}, starting graceful shutdown...`);
 
   try {
-    // Get channels with active status messages
-    const activeChannels = new Set<string>();
-    
-    // Collect all channels with status messages
-    for (const [key, msg] of statusMessages) {
-      activeChannels.add(msg.channelId);
+    // Log counts for debugging why notifications may not be sent
+    logger.debug("Shutdown notification sources", {
+      statusMessages: statusMessages.size,
+      queueStatusMessages: queueStatusMessages.size,
+      channelCache: channelCache.size,
+    });
+
+    // Build a set of channel IDs we should notify. Prefer real TextChannel instances
+    // from the cache or message objects; otherwise we'll attempt to fetch the channel.
+    const channelIds = new Set<string>();
+    for (const [, msg] of statusMessages) {
+      try {
+        if (msg.channelId) channelIds.add(msg.channelId);
+      } catch (err) {}
     }
     for (const [channelId] of queueStatusMessages) {
-      activeChannels.add(channelId);
+      try {
+        if (channelId) channelIds.add(channelId);
+      } catch (err) {}
     }
-
-    // Also include channels from cached channels
     for (const [channelId] of channelCache) {
-      activeChannels.add(channelId);
+      channelIds.add(channelId);
     }
 
-    // Post maintenance notification to all active channels
     const maintenanceMessage = "🔄 Bot Closing Down for Maintenance - Processing will resume shortly";
     const notificationPromises: Promise<void>[] = [];
-    
-    for (const channelId of activeChannels) {
-      const channel = channelCache.get(channelId);
-      if (channel) {
-        notificationPromises.push(
-          (async () => {
-            try {
-              await channel.send(maintenanceMessage);
-              logger.debug("Posted maintenance notification", { channelId });
-            } catch (err) {
-              logger.warn("Failed to post maintenance notification", {
-                channelId,
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
-          })()
-        );
+
+    if (channelIds.size === 0) {
+      logger.debug("No active channels discovered for shutdown notification");
+      // Fallback to a configured notification channel or the monitored channel
+      const fallbackChannelId = process.env.MAINTENANCE_NOTIFICATION_CHANNEL_ID || config.DISCORD_CHANNEL_ID;
+      if (fallbackChannelId) {
+        logger.debug("Attempting fallback notification channel", { fallbackChannelId });
+        try {
+          const fetched = await bot.getClient().channels.fetch(fallbackChannelId);
+          if (fetched && fetched.isText()) {
+            const textChan = fetched as TextChannel;
+            channelCache.set(fallbackChannelId, textChan);
+            notificationPromises.push((async () => {
+              try {
+                await textChan.send(maintenanceMessage);
+                logger.debug("Posted maintenance notification (fallback)", { channelId: fallbackChannelId });
+              } catch (err) {
+                logger.warn("Failed to post maintenance notification (fallback)", { channelId: fallbackChannelId, error: err instanceof Error ? err.message : String(err) });
+              }
+            })());
+          } else {
+            logger.warn("Fallback channel is not a text channel or could not be fetched", { fallbackChannelId });
+          }
+        } catch (err) {
+          logger.warn("Failed to fetch fallback notification channel", { fallbackChannelId, error: err instanceof Error ? err.message : String(err) });
+        }
+      } else {
+        logger.debug("No fallback channel configured for shutdown notifications");
       }
+    }
+
+    for (const channelId of channelIds) {
+      // Use cached TextChannel if available
+      const cached = channelCache.get(channelId);
+      if (cached) {
+        notificationPromises.push((async () => {
+          try {
+            await cached.send(maintenanceMessage);
+            logger.debug("Posted maintenance notification", { channelId });
+          } catch (err) {
+            logger.warn("Failed to post maintenance notification", { channelId, error: err instanceof Error ? err.message : String(err) });
+          }
+        })());
+        continue;
+      }
+
+      // Not cached: attempt to fetch channel from Discord client
+      notificationPromises.push((async () => {
+        try {
+          const fetched = await bot.getClient().channels.fetch(channelId);
+          if (!fetched || !fetched.isText()) {
+            logger.warn("Could not fetch text channel for maintenance notification", { channelId });
+            return;
+          }
+
+          const textChan = fetched as TextChannel;
+          // Cache for later use during shutdown
+          channelCache.set(channelId, textChan);
+
+          await textChan.send(maintenanceMessage);
+          logger.debug("Posted maintenance notification", { channelId });
+        } catch (err) {
+          logger.warn("Failed to post maintenance notification", { channelId, error: err instanceof Error ? err.message : String(err) });
+        }
+      })());
     }
     
     // Wait for notifications to complete (with timeout)
@@ -707,6 +781,13 @@ async function gracefulShutdown(signal: string): Promise<void> {
     });
 
     // Re-queue current processing item if any
+    // Stop background polling to avoid creating new items while shutting down
+    try {
+      documentQueue.stopPolling();
+      logger.debug("Stopped document queue polling for shutdown");
+    } catch (err) {
+      logger.warn("Failed to stop document queue polling", { error: err instanceof Error ? err.message : String(err) });
+    }
     const currentItem = documentQueue.getCurrentItem();
     if (currentItem) {
       logger.info("Re-queuing current processing item", {

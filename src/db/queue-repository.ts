@@ -92,6 +92,13 @@ export class DocumentQueueRepository {
     return result.rows.map(row => row.url);
   }
 
+  async getPendingCount(): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT COUNT(*)::int AS count FROM document_queue WHERE status IN ('pending', 'processing')`
+    );
+    return result.rows.length > 0 ? Number(result.rows[0].count) : 0;
+  }
+
   async resetProcessingToPending(): Promise<number> {
     const result = await this.pool.query(
       `UPDATE document_queue 

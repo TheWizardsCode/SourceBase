@@ -24,12 +24,16 @@ export interface DocumentQueueOptions {
   ingestionService: IngestionService;
   repository: DocumentQueueRepository;
   onQueueUpdate?: (item: QueueItem, queueSize: number, status: QueueUpdateStatus) => Promise<void>;
+  /** Poll interval in milliseconds to look for pending DB entries added externally */
+  pollIntervalMs?: number;
 }
 
 export class DocumentQueue {
   private queue: QueueItem[] = [];
   private currentItem: QueueItem | null = null;
   private isProcessing = false;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollInProgress = false;
 
   constructor(private readonly options: DocumentQueueOptions) {}
 
@@ -90,6 +94,11 @@ export class DocumentQueue {
       this.processQueue();
     }
 
+    // Start background polling for externally-added DB entries
+    if (this.options.pollIntervalMs && this.options.pollIntervalMs > 0) {
+      this.startPolling();
+    }
+
     return pendingItems;
   }
 
@@ -101,6 +110,70 @@ export class DocumentQueue {
   async enqueue(message: Message): Promise<void> {
     const urls = this.extractUrls(message.content);
     await this.enqueueUrls(urls, message);
+  }
+
+  /**
+   * Start polling the database for pending entries that may have been added externally
+   */
+  private startPolling(): void {
+    if (this.pollTimer) return;
+    const interval = this.options.pollIntervalMs!;
+    this.pollTimer = setInterval(async () => {
+      if (this.pollInProgress) return;
+      this.pollInProgress = true;
+      try {
+        // Fetch pending URLs from DB and compare with in-memory queue
+        const pendingUrls = await this.options.repository.getAllPendingUrls();
+        const queuedSet = new Set(this.queue.map(i => i.url));
+        if (this.currentItem) queuedSet.add(this.currentItem.url);
+
+        const newUrls = pendingUrls.filter(u => !queuedSet.has(u));
+        if (newUrls.length === 0) return;
+
+        // For discovered external URLs create synthetic message placeholders.
+        // Try to use metadata from the DB entry when available (channel, author, id).
+        for (const url of newUrls) {
+          const entry = await this.options.repository.getByUrl(url);
+
+          const syntheticMessage = {
+            id: entry ? entry.discordMessageId : `db-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+            channelId: entry ? entry.discordChannelId : "",
+            channel: { type: 'GUILD_TEXT' },
+            author: { id: entry ? entry.discordAuthorId : 'external' },
+            content: url,
+            client: { user: { id: '' } },
+            react: async () => {},
+            reply: async () => {},
+          } as unknown as Message;
+
+          const item: QueueItem = { message: syntheticMessage, url };
+          if (entry) item.dbId = entry.id;
+
+          this.queue.push(item);
+
+          if (this.options.onQueueUpdate) {
+            await this.options.onQueueUpdate(item, this.queue.length, 'added');
+          }
+        }
+
+        // Kick the processor
+        this.processQueue();
+      } catch (err) {
+        this.options.logger.warn("Polling for external queue items failed", { error: err instanceof Error ? err.message : String(err) });
+      } finally {
+        this.pollInProgress = false;
+      }
+    }, interval);
+  }
+
+  /**
+   * Stop background polling (used during shutdown)
+   */
+  stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
   }
 
   /**

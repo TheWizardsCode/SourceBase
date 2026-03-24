@@ -67,6 +67,89 @@ TypeScript Discord bot for monitoring a channel and indexing shared links with s
 - `npm run test` - Run unit tests
 - `npm run db:migrate` - Apply SQL migrations to PostgreSQL
 
+## CLI Commands
+
+The bot provides a CLI tool for database operations outside of Discord:
+
+### Installation
+
+After building the project, the `sb` command is available:
+
+```bash
+npm run build
+# Option 1: Use npx
+npx sb <command>
+
+# Option 2: Link globally
+npm link
+sb <command>
+```
+
+### Commands
+
+#### `sb add` - Add URLs directly to the database
+
+Process URLs immediately (bypasses the queue):
+
+```bash
+# Add single URL
+sb add https://example.com/article
+
+# Add multiple URLs
+sb add https://url1.com https://url2.com https://url3.com
+
+# Add with verbose progress output
+sb add --verbose https://example.com
+```
+
+**Features:**
+- Extracts content, generates summary and embedding immediately
+- Shows progress: `Downloading → Extracting → Summarizing → Embedding → Storing → Completed`
+- Outputs: `Added: <title> (ID: <id>)` on success, `Failed: <url> - <error>` on failure
+- Supports YouTube URLs with transcript extraction
+- Exit codes: 0 (success), 1 (error), 2 (invalid args)
+
+#### `sb queue` - Queue URLs for later processing
+
+Add URLs to the processing queue (processed by the bot asynchronously):
+
+```bash
+# Queue single URL
+sb queue https://example.com/article
+
+# Queue multiple URLs
+sb queue https://url1.com https://url2.com https://url3.com
+
+# Queue with verbose output
+sb queue --verbose https://example.com
+```
+
+**Features:**
+- Inserts URLs into `document_queue` with `pending` status
+- URLs processed sequentially by the bot
+- Discord notifications sent to the configured channel on progress/completion
+- Outputs: `Queued: <url> (ID: <id>)` on success
+- Exit codes: 0 (success), 1 (error), 2 (invalid args)
+
+#### `sb search` - Search indexed content (coming soon)
+
+#### `sb stats` - Database statistics (coming soon)
+
+### Global Options
+
+All commands support:
+- `--help, -h` - Show usage information
+- `--version, -v` - Show version
+- `--verbose` - Enable detailed JSON logging output
+
+### Environment Requirements
+
+CLI commands require the same environment variables as the bot:
+- `DATABASE_URL` - PostgreSQL connection string (required)
+- `LLM_BASE_URL` - LLM API endpoint (required for `add`)
+- `LLM_MODEL` - Model name (required for `add`)
+- `DISCORD_CHANNEL_ID` - Channel for notifications (required for `queue`)
+
 ## YouTube Ingestion
 
 The bot provides enhanced support for YouTube URLs with the following features:

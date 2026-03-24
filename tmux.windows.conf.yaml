@@ -1,0 +1,15 @@
+# tmux.windows.conf.yaml - Window layout for SourceBase project
+# Usage: ~/bin/tmux.sh load tmux.windows.conf.yaml
+
+windows:
+  - name: SourceBase
+    layout: quadrants
+    panes:
+      - command: opencode
+        label: opencode-1
+      - command: opencode
+        label: opencode-2
+      - command: npm run build && npm run start
+        label: dev
+      - command: wl tui
+        label: worklog

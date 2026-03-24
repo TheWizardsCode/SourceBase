@@ -3,10 +3,13 @@ import { getDbPool } from "../../db/client.js";
 import { LinkRepository } from "../../db/repository.js";
 import { ArticleExtractorContentExtractor } from "../../ingestion/extractor.js";
 import { IngestionService, type ProgressUpdate, type IngestionProgress, type ProgressCallback } from "../../ingestion/service.js";
-import { isYouTubeUrl } from "../../ingestion/url.js";
 import { YouTubeApiClient } from "../../ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "../../llm/client.js";
 import { Logger } from "../../logger.js";
+
+interface AddOptions {
+  verbose?: boolean;
+}
 
 interface AddResult {
   success: boolean;
@@ -14,6 +17,18 @@ interface AddResult {
   title?: string;
   id?: number;
   error?: string;
+}
+
+class SilentLogger extends Logger {
+  constructor() {
+    super("error"); // Only log errors, which we won't produce
+  }
+  
+  // Override all methods to do nothing
+  debug(): void {}
+  info(): void {}
+  warn(): void {}
+  error(): void {}
 }
 
 function validateUrl(url: string): boolean {
@@ -25,51 +40,27 @@ function validateUrl(url: string): boolean {
   }
 }
 
-function formatProgressLine(phase: string, current: number, total: number, url: string): string {
-  const phaseEmoji: Record<string, string> = {
-    downloading: "⬇️ ",
-    extracting_links: "📄",
-    updating: "🔄",
-    summarizing: "✍️ ",
-    embedding: "🔢",
-    storing: "💾",
-    completed: "✅",
-    failed: "❌"
-  };
-  
-  const emoji = phaseEmoji[phase] || "⏳";
-  const progress = total > 1 ? `[${current}/${total}] ` : "";
-  const phaseLabel = phase.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
-  
-  return `${emoji} ${progress}${phaseLabel}: ${url}`;
-}
-
-function createConsoleProgressCallback(): ProgressCallback {
+function createProgressCallback(verbose: boolean): ProgressCallback {
   return async (update: ProgressUpdate, overall: IngestionProgress) => {
-    const line = formatProgressLine(update.phase, update.current, update.total, update.url);
-    
-    // Clear previous line and print new status
-    if (process.stdout.isTTY) {
-      process.stdout.write("\r\x1b[K");
-      process.stdout.write(line);
-      
-      // Add newline on completion or failure
-      if (update.phase === "completed" || update.phase === "failed") {
-        process.stdout.write("\n");
-      }
-    } else {
-      // Non-TTY: just print on phase changes
-      if (update.phase !== "downloading") {
-        console.log(line);
-      }
+    // Only show progress in verbose mode
+    if (!verbose) {
+      return;
     }
+    
+    // In verbose mode, output JSON for each phase
+    console.log(JSON.stringify({
+      phase: update.phase,
+      url: update.url,
+      current: update.current,
+      total: update.total,
+      message: update.message
+    }));
   };
 }
 
 async function processSingleUrl(
   url: string,
-  ingestionService: IngestionService,
-  logger: Logger
+  options: AddOptions
 ): Promise<AddResult> {
   try {
     // Use a mock message object for compatibility with IngestionService
@@ -95,8 +86,16 @@ async function processSingleUrl(
 
     // Create progress callback that captures the result
     const progressCallback: ProgressCallback = async (update, overall) => {
-      // Call console progress callback for display
-      await createConsoleProgressCallback()(update, overall);
+      // In verbose mode, show JSON progress
+      if (options.verbose) {
+        console.log(JSON.stringify({
+          phase: update.phase,
+          url: update.url,
+          current: update.current,
+          total: update.total,
+          message: update.message
+        }));
+      }
       
       // Capture result data
       if (update.phase === "completed") {
@@ -108,8 +107,10 @@ async function processSingleUrl(
       }
     };
 
+    // Create logger - silent unless verbose
+    const logger = options.verbose ? new Logger(config.LOG_LEVEL) : new SilentLogger();
+
     // Create a custom ingestion service with our progress callback
-    // We need to create a new service because onProgress is passed in constructor options
     const pool = getDbPool();
     const repository = new LinkRepository(pool);
     const extractor = new ArticleExtractorContentExtractor();
@@ -170,9 +171,7 @@ async function processSingleUrl(
   }
 }
 
-export async function addCommand(urls: string[]): Promise<{ results: AddResult[]; exitCode: number }> {
-  const logger = new Logger(config.LOG_LEVEL);
-  
+export async function addCommand(urls: string[], options: AddOptions = {}): Promise<{ results: AddResult[]; exitCode: number }> {
   // Validate all URLs first
   const invalidUrls: string[] = [];
   const validUrls: string[] = [];
@@ -185,10 +184,10 @@ export async function addCommand(urls: string[]): Promise<{ results: AddResult[]
     }
   }
   
-  // Report invalid URLs
+  // Report invalid URLs (always show these errors)
   if (invalidUrls.length > 0) {
     for (const url of invalidUrls) {
-      console.error(`⚠️ Invalid URL: ${url}`);
+      console.error(`Invalid URL: ${url}`);
     }
   }
   
@@ -205,19 +204,14 @@ export async function addCommand(urls: string[]): Promise<{ results: AddResult[]
   for (let i = 0; i < validUrls.length; i++) {
     const url = validUrls[i];
     
-    // Print URL being processed
-    if (validUrls.length > 1) {
-      console.log(`\n[${i + 1}/${validUrls.length}] Processing: ${url}`);
-    }
-    
-    const result = await processSingleUrl(url, null as any, logger);
+    const result = await processSingleUrl(url, options);
     results.push(result);
     
     if (result.success) {
       const title = result.title || url;
-      console.log(`✅ Added: ${title}${result.id ? ` (ID: ${result.id})` : ""}`);
+      console.log(`Added: ${title}${result.id ? ` (ID: ${result.id})` : ""}`);
     } else {
-      console.error(`⚠️ Failed: ${url} - ${result.error}`);
+      console.error(`Failed: ${url} - ${result.error}`);
       hasFailure = true;
     }
   }

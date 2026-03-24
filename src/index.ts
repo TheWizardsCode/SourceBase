@@ -116,6 +116,9 @@ const queueStatusMessages = new Map<string, Message>();
 // Keep track of pending items loaded from database for status restoration
 let pendingItemsFromRestart: Array<{ url: string; discordMessageId: string; discordChannelId: string }> = [];
 
+// Cache of real Discord channels for synthetic messages loaded from database
+const channelCache = new Map<string, TextChannel>();
+
 const ingestionService = new IngestionService({
   repository,
   extractor: new ArticleExtractorContentExtractor(),
@@ -231,9 +234,18 @@ const documentQueue = new DocumentQueue({
   repository: queueRepository,
   onQueueUpdate: async (item, queueSize, status) => {
     try {
-      if (item.message.channel.type !== 'GUILD_TEXT') return;
-
       const channelId = item.message.channelId;
+      
+      // Use cached channel if available (for synthetic messages loaded from DB)
+      // otherwise use the real channel from the message
+      let textChannel: TextChannel;
+      const cachedChannel = channelCache.get(channelId);
+      if (cachedChannel) {
+        textChannel = cachedChannel;
+      } else {
+        if (item.message.channel.type !== 'GUILD_TEXT') return;
+        textChannel = item.message.channel as TextChannel;
+      }
 
       // Delete previous queue status message if it exists
       const previousMsg = queueStatusMessages.get(channelId);
@@ -251,7 +263,7 @@ const documentQueue = new DocumentQueue({
       if (status === 'processing') {
         // Create a new status message for progress tracking
         // This will be used by the onProgress callback
-        const statusMsg = await item.message.channel.send(`⏳ Processing <${item.url}>...`);
+        const statusMsg = await textChannel.send(`⏳ Processing <${item.url}>...`);
         // Store by message ID so onProgress can find it
         statusMessages.set(item.message.id, statusMsg);
       }
@@ -265,7 +277,7 @@ const documentQueue = new DocumentQueue({
       const messageContent = formatQueueMessage(item.url, queueSize, status);
 
       // Send new queue status message
-      const newQueueMsg = await item.message.channel.send(messageContent);
+      const newQueueMsg = await textChannel.send(messageContent);
       queueStatusMessages.set(channelId, newQueueMsg);
     } catch (err) {
       logger.warn("Failed to update queue status message", {
@@ -484,7 +496,7 @@ async function restoreStatusMessages(): Promise<void> {
     itemsByChannel.set(item.discordChannelId, existing);
   }
 
-  // Send a single queue status message per channel
+  // Fetch and cache real Discord channels, then send queue status messages
   for (const [channelId, items] of itemsByChannel) {
     try {
       const channel = await bot.getClient().channels.fetch(channelId);
@@ -494,6 +506,9 @@ async function restoreStatusMessages(): Promise<void> {
         });
         continue;
       }
+
+      // Cache the real channel for later use by onQueueUpdate
+      channelCache.set(channelId, channel as TextChannel);
 
       // Send a single queue status message showing queue length
       const queueSize = items.length;
@@ -516,6 +531,7 @@ async function restoreStatusMessages(): Promise<void> {
 
   logger.info("Status message restoration complete", {
     channelsRestored: queueStatusMessages.size,
+    channelsCached: channelCache.size,
   });
 }
 

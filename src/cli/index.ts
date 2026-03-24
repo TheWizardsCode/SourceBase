@@ -119,8 +119,14 @@ async function main(): Promise<number> {
   // Command routing - for now, commands will be implemented separately
   switch (command) {
     case "add":
-      console.error("Error: 'add' command not yet implemented");
-      return 1;
+      if (args.length < 2) {
+        console.error("Error: 'add' command requires at least one URL argument");
+        console.error("Usage: sb add <url> [<url2> ...]");
+        return 2;
+      }
+      const { addCommand } = await import("./commands/add.js");
+      const { exitCode } = await addCommand(args.slice(1));
+      return exitCode;
     case "search":
       console.error("Error: 'search' command not yet implemented");
       return 1;

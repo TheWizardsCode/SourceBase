@@ -2,7 +2,7 @@ import type { Message } from "discord.js";
 
 import type { LinkRecord } from "../db/repository.js";
 import type { Logger } from "../logger.js";
-import { extractUrls, isYouTubeUrl, extractYouTubeVideoId } from "./url.js";
+import { extractUrls, isYouTubeUrl, extractYouTubeVideoId, isPdfUrl } from "./url.js";
 import type { ContentExtractor } from "./extractor.js";
 import type { YouTubeApiClient } from "./youtube.js";
 
@@ -52,6 +52,7 @@ export type ProgressCallback = (update: ProgressUpdate, overall: IngestionProgre
 export interface IngestionServiceOptions {
   repository: LinkStore;
   extractor: ContentExtractor;
+  pdfExtractor?: ContentExtractor;
   summarizer: {
     summarize(content: string, sessionId?: string): Promise<string>;
   };
@@ -208,6 +209,18 @@ export class IngestionService {
             progress.phase = "completed";
             await this.reportProgress(
               { phase: "completed", url, current: currentIndex + 1, total: allUrls.length, summary: result.summary ?? undefined, title: result.title, isUpdate },
+              progress
+            );
+            continue;
+          }
+
+          // Check if this is a PDF URL
+          if (isPdfUrl(url) && this.options.pdfExtractor) {
+            const result = await this.ingestPdfUrl(url, message, currentIndex + 1, allUrls.length, progress, isUpdate);
+            progress.completed++;
+            progress.phase = "completed";
+            await this.reportProgress(
+              { phase: "completed", url, current: currentIndex + 1, total: allUrls.length, summary: result.summary ?? undefined, title: result.title ?? undefined, isUpdate },
               progress
             );
             continue;
@@ -581,4 +594,186 @@ export class IngestionService {
       return { summary, title: metadata.title };
     }
 
+    private async ingestPdfUrl(
+      url: string,
+      message: Message,
+      currentIndex: number,
+      totalUrls: number,
+      progress: IngestionProgress,
+      isUpdate: boolean = false
+    ): Promise<{ summary: string | null; title: string | null }> {
+      // Generate unique session ID for this URL (for llama.cpp context isolation)
+      const sessionId = generateSessionId();
+
+      this.options.logger.info("Processing PDF URL", { url, sessionId, isUpdate });
+
+      // Report downloading phase
+      await this.reportProgress(
+        { phase: "downloading", url, current: currentIndex, total: totalUrls, isUpdate },
+        progress
+      );
+
+      // Extract PDF content using the PDF extractor
+      const extracted = await this.options.pdfExtractor!.extract(url);
+      if (!extracted) {
+        throw new Error("Failed to extract PDF content");
+      }
+
+      // Report extracting or updating phase
+      progress.phase = isUpdate ? "updating" : "extracting_links";
+      await this.reportProgress(
+        { phase: progress.phase, url, current: currentIndex, total: totalUrls, isUpdate },
+        progress
+      );
+
+      // Generate summary from PDF content
+      let summary: string | null = null;
+      const contentForSummary = [extracted.title, extracted.content]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
+      
+      if (contentForSummary) {
+        progress.phase = "summarizing";
+        await this.reportProgress(
+          {
+            phase: "summarizing",
+            url,
+            current: currentIndex,
+            total: totalUrls,
+            isUpdate
+          },
+          progress
+        );
+
+        try {
+          summary = await this.options.summarizer.summarize(contentForSummary, sessionId);
+        } catch (sumErr) {
+          this.options.logger.warn('Failed to summarize PDF content', {
+            url,
+            messageId: message.id,
+            error: sumErr instanceof Error ? sumErr.message : String(sumErr)
+          });
+        }
+      }
+
+      // Generate embedding from PDF content
+      const embeddingText = [extracted.title, summary, extracted.content]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
+      
+      let embedding: number[] | null = null;
+      let fullEmbedding: number[] | null = null;
+      
+      if (embeddingText) {
+        progress.phase = "embedding";
+        await this.reportProgress(
+          {
+            phase: "embedding",
+            url,
+            current: currentIndex,
+            total: totalUrls,
+            isUpdate
+          },
+          progress
+        );
+
+        try {
+          const vec = await this.options.embedder.embed(embeddingText);
+          fullEmbedding = vec;
+          embedding = vec.slice();
+          
+          // Resize embedding to match DB dimension
+          const TARGET_EMBED_DIM = 2000;
+          if (embedding.length !== TARGET_EMBED_DIM) {
+            this.options.logger.warn("Embedding dimension mismatch, resizing to DB target", {
+              url,
+              expected: TARGET_EMBED_DIM,
+              actual: embedding.length
+            });
+            if (embedding.length > TARGET_EMBED_DIM) {
+              embedding = embedding.slice(0, TARGET_EMBED_DIM);
+            } else {
+              const padding = new Array(TARGET_EMBED_DIM - embedding.length).fill(0);
+              embedding = embedding.concat(padding);
+            }
+          }
+        } catch (embErr) {
+          this.options.logger.warn('Failed to embed PDF content', {
+            url,
+            messageId: message.id,
+            error: embErr instanceof Error ? embErr.message : String(embErr)
+          });
+        }
+      }
+
+      // Report storing phase
+      progress.phase = "storing";
+      await this.reportProgress(
+        { phase: "storing", url, current: currentIndex, total: totalUrls },
+        progress
+      );
+
+      // Store in repository with PDF-specific metadata
+      const stored = await this.options.repository.upsertLink({
+        url,
+        title: extracted.title,
+        summary,
+        content: extracted.content,
+        imageUrl: extracted.imageUrl,
+        embedding,
+        metadata: {
+          discordMessageId: message.id,
+          discordChannelId: message.channelId,
+          discordAuthorId: message.author.id,
+          contentType: "pdf",
+          pageCount: extracted.metadata.pageCount ?? null,
+          pdfAuthor: extracted.metadata.author ?? null,
+          pdfSubject: extracted.metadata.subject ?? null,
+          pdfCreator: extracted.metadata.creator ?? null,
+          pdfProducer: extracted.metadata.producer ?? null,
+          pdfCreationDate: extracted.metadata.creationDate ?? null,
+          pdfModificationDate: extracted.metadata.modificationDate ?? null,
+          pdfVersion: extracted.metadata.pdfVersion ?? null
+        }
+      });
+
+      // If an ANN provider is configured, index the original embedding
+      try {
+        const ann = this.options.ann;
+        if (ann && stored && (stored as any).id) {
+          const vectorToIndex = fullEmbedding && fullEmbedding.length ? fullEmbedding : embedding;
+          if (vectorToIndex && vectorToIndex.length) {
+            await ann.indexBatch(ann.collection, [{ id: (stored as any).id, vector: vectorToIndex }]);
+          }
+        }
+      } catch (annErr) {
+        this.options.logger.warn("Failed to index embedding into ANN", { url, error: annErr instanceof Error ? annErr.message : String(annErr) });
+      }
+
+      this.options.logger.info("Ingested PDF URL", {
+        url,
+        title: extracted.title,
+        pageCount: extracted.metadata.pageCount,
+        messageId: message.id
+      });
+
+      // Remove eyes reaction before adding success reaction
+      const botUserId = message.client?.user?.id;
+      if (botUserId) {
+        const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
+        if (eyesReaction) {
+          await eyesReaction.users.remove(botUserId);
+        }
+      }
+      
+      // Use update reaction if this is an update, otherwise use success reaction
+      const reaction = isUpdate && this.options.updateReaction 
+        ? this.options.updateReaction 
+        : this.options.successReaction;
+      await message.react(reaction);
+      
+      return { summary, title: extracted.title };
+    }
 }

@@ -15,6 +15,9 @@ const YOUTUBE_PATTERNS = {
 
 const VIDEO_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/;
 
+// PDF URL patterns - detect direct links to PDF files
+const PDF_PATTERN = /https?:\/\/[^\s<>()]+\.pdf(\?[^\s<>()]*)?$/i;
+
 export function extractUrls(text: string): string[] {
   const matches = text.match(URL_REGEX) ?? [];
   const normalized = matches.map((raw) => raw.replace(/[),.;!?]+$/g, ""));
@@ -99,4 +102,23 @@ export function normalizeYouTubeUrl(url: string): string | null {
     return null;
   }
   return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+// PDF URL detection
+export function isPdfUrl(url: string): boolean {
+  return PDF_PATTERN.test(url);
+}
+
+export function normalizePdfUrl(url: string): string | null {
+  if (!isPdfUrl(url)) {
+    return null;
+  }
+  // Clean up any trailing query parameters or fragments for consistency
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }

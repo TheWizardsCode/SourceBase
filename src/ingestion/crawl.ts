@@ -43,7 +43,9 @@ export class CrawlService {
   constructor(private readonly options: CrawlOptions) {
     this.maxUrls = options.maxUrls ?? 50;
     this.maxDepth = options.maxDepth ?? 2;
-    this.userAgent = options.userAgent ?? "SourceBaseBot/1.0";
+    // Default to a common, well-known browser user agent string unless overridden.
+    this.userAgent = options.userAgent ??
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.5993.90 Safari/537.36";
     this.requestDelayMs = options.requestDelayMs ?? 1000;
     this.crawlPolicy = new RobotsTxtCrawlPolicy({
       userAgent: this.userAgent,

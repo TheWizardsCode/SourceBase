@@ -3,6 +3,14 @@ import type { Logger } from "../logger.js";
 import type { IngestionService } from "./service.js";
 import { DocumentQueueRepository } from "../db/queue-repository.js";
 
+export interface PendingQueueItem {
+  url: string;
+  discordMessageId: string;
+  discordChannelId: string;
+  discordAuthorId: string;
+  dbId: number;
+}
+
 export interface QueueItem {
   message: Message;
   url: string;
@@ -27,11 +35,14 @@ export class DocumentQueue {
 
   /**
    * Initialize the queue by loading pending items from database
+   * Returns the loaded pending items with Discord metadata for status message restoration
    */
-  async initialize(): Promise<void> {
+  async initialize(): Promise<PendingQueueItem[]> {
     this.options.logger.info("Initializing document queue from database");
     const pendingEntries = await this.options.repository.getPending();
     
+    const pendingItems: PendingQueueItem[] = [];
+
     for (const entry of pendingEntries) {
       // Create a minimal message-like object with necessary fields
       const syntheticMessage = {
@@ -50,6 +61,15 @@ export class DocumentQueue {
         url: entry.url,
         dbId: entry.id,
       });
+
+      // Track pending items for status restoration
+      pendingItems.push({
+        url: entry.url,
+        discordMessageId: entry.discordMessageId,
+        discordChannelId: entry.discordChannelId,
+        discordAuthorId: entry.discordAuthorId,
+        dbId: entry.id,
+      });
     }
 
     this.options.logger.info("Loaded pending URLs from database", {
@@ -60,6 +80,8 @@ export class DocumentQueue {
     if (this.queue.length > 0) {
       this.processQueue();
     }
+
+    return pendingItems;
   }
 
   /**

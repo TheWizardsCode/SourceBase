@@ -1,4 +1,4 @@
-import type { Message } from "discord.js";
+import { Client, Intents, TextChannel, type Message } from "discord.js";
 import { config } from "./config.js";
 import { getDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
@@ -112,6 +112,9 @@ const statusMessages = new Map<string, Message>();
 
 // Track queue status message per channel
 const queueStatusMessages = new Map<string, Message>();
+
+// Keep track of pending items loaded from database for status restoration
+let pendingItemsFromRestart: Array<{ url: string; discordMessageId: string; discordChannelId: string }> = [];
 
 const ingestionService = new IngestionService({
   repository,
@@ -450,16 +453,72 @@ const bot = new DiscordBot({
 async function startBot() {
   try {
     // Load any pending items from database
-    await documentQueue.initialize();
+    pendingItemsFromRestart = await documentQueue.initialize();
     
     // Start the bot
     await bot.start();
+    
+    // After bot starts, restore status message tracking for pending items
+    if (pendingItemsFromRestart.length > 0) {
+      await restoreStatusMessages();
+    }
   } catch (error) {
     logger.error("Bot startup failed", {
       error: error instanceof Error ? error.message : String(error)
     });
     process.exitCode = 1;
   }
+}
+
+// Restore status message tracking after bot restart
+async function restoreStatusMessages(): Promise<void> {
+  logger.info("Restoring status message tracking for pending items", {
+    count: pendingItemsFromRestart.length,
+  });
+
+  for (const item of pendingItemsFromRestart) {
+    try {
+      // Try to fetch the original Discord message
+      const channel = await bot.getClient().channels.fetch(item.discordChannelId);
+      if (!channel || !channel.isText()) {
+        logger.warn("Could not find channel for pending item", {
+          channelId: item.discordChannelId,
+          messageId: item.discordMessageId,
+        });
+        continue;
+      }
+
+      const message = await (channel as TextChannel).messages.fetch(item.discordMessageId);
+      if (!message) {
+        logger.warn("Could not find original message for pending item", {
+          messageId: item.discordMessageId,
+          channelId: item.discordChannelId,
+        });
+        continue;
+      }
+
+      // Create a progress status message for this item
+      // This ensures that when processing starts, onProgress can find the message
+      const statusMsg = await (channel as TextChannel).send(`⏳ Resuming processing of <${item.url}>...`);
+      statusMessages.set(item.discordMessageId, statusMsg);
+
+      logger.debug("Restored status message tracking", {
+        messageId: item.discordMessageId,
+        url: item.url,
+      });
+    } catch (err) {
+      logger.warn("Failed to restore status message for pending item", {
+        messageId: item.discordMessageId,
+        url: item.url,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Continue with other items - don't let one failure stop the rest
+    }
+  }
+
+  logger.info("Status message restoration complete", {
+    restoredCount: statusMessages.size,
+  });
 }
 
 startBot();

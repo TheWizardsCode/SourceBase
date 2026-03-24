@@ -204,7 +204,12 @@ export class LinkRepository {
         (SELECT COUNT(*) FROM links WHERE created_at > NOW() - INTERVAL '24 hours') as links_last_24h,
         (SELECT COUNT(*) FROM links WHERE created_at > NOW() - INTERVAL '7 days') as links_last_7d,
         (SELECT COUNT(*) FROM links WHERE created_at > NOW() - INTERVAL '30 days') as links_last_30d,
-        (SELECT COALESCE(AVG(array_length(embedding, 1)), 0) FROM links WHERE embedding IS NOT NULL) as avg_embedding_dim
+        -- Some Postgres setups (pgvector) don't expose the embedding as a
+        -- regular SQL array which makes array_length() fail. Returning 0
+        -- here is safe and avoids making the stats query fragile. If you
+        -- need a real average embedding dimension, compute it offline or
+        -- implement a DB-side function that extracts the vector length.
+        0 as avg_embedding_dim
     `);
 
     const row = result.rows[0] as Record<string, string>;

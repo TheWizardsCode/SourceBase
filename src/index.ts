@@ -217,6 +217,90 @@ function formatQueueMessage(url: string, queueSize: number, status: QueueUpdateS
   }
 }
 
+// Send startup/online notifications to channels we previously notified on shutdown
+async function sendStartupNotifications(): Promise<void> {
+  try {
+    logger.info("Sending startup notifications to channels");
+
+    // Build set of channel IDs to notify
+    const channelIds = new Set<string>();
+    for (const [, msg] of statusMessages) {
+      try { if (msg.channelId) channelIds.add(msg.channelId); } catch (err) {}
+    }
+    for (const [channelId] of queueStatusMessages) {
+      try { if (channelId) channelIds.add(channelId); } catch (err) {}
+    }
+    for (const [channelId] of channelCache) {
+      channelIds.add(channelId);
+    }
+
+    const onlineMessage = "✅ Bot is back online — processing resumed";
+    const notifyPromises: Promise<void>[] = [];
+
+    if (channelIds.size === 0) {
+      logger.debug("No channels found to send startup notification; attempting fallback");
+      const fallbackChannelId = process.env.MAINTENANCE_NOTIFICATION_CHANNEL_ID || config.DISCORD_CHANNEL_ID;
+      if (fallbackChannelId) {
+        try {
+          const fetched = await bot.getClient().channels.fetch(fallbackChannelId);
+          if (fetched && fetched.isText()) {
+            const textChan = fetched as TextChannel;
+            channelCache.set(fallbackChannelId, textChan);
+            notifyPromises.push((async () => {
+              try {
+                await textChan.send(onlineMessage);
+                logger.debug("Posted startup notification (fallback)", { channelId: fallbackChannelId });
+              } catch (err) {
+                logger.warn("Failed to post startup notification (fallback)", { channelId: fallbackChannelId, error: err instanceof Error ? err.message : String(err) });
+              }
+            })());
+          } else {
+            logger.warn("Fallback channel is not a text channel or could not be fetched", { fallbackChannelId });
+          }
+        } catch (err) {
+          logger.warn("Failed to fetch fallback channel for startup notification", { fallbackChannelId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    }
+
+    for (const channelId of channelIds) {
+      const cached = channelCache.get(channelId);
+      if (cached) {
+        notifyPromises.push((async () => {
+          try {
+            await cached.send(onlineMessage);
+            logger.debug("Posted startup notification", { channelId });
+          } catch (err) {
+            logger.warn("Failed to post startup notification", { channelId, error: err instanceof Error ? err.message : String(err) });
+          }
+        })());
+        continue;
+      }
+
+      notifyPromises.push((async () => {
+        try {
+          const fetched = await bot.getClient().channels.fetch(channelId);
+          if (!fetched || !fetched.isText()) {
+            logger.warn("Could not fetch text channel for startup notification", { channelId });
+            return;
+          }
+          const textChan = fetched as TextChannel;
+          channelCache.set(channelId, textChan);
+          await textChan.send(onlineMessage);
+          logger.debug("Posted startup notification", { channelId });
+        } catch (err) {
+          logger.warn("Failed to post startup notification", { channelId, error: err instanceof Error ? err.message : String(err) });
+        }
+      })());
+    }
+
+    await Promise.allSettled(notifyPromises);
+    logger.info("Startup notifications complete");
+  } catch (err) {
+    logger.warn("Failed to send startup notifications", { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 // Initialize crawl service
 const crawlService = new CrawlService({
   logger,
@@ -544,6 +628,9 @@ async function startBot() {
     if (pendingItemsFromRestart.length > 0) {
       await restoreStatusMessages();
     }
+
+    // Send startup notifications to channels (if any)
+    await sendStartupNotifications();
   } catch (error) {
     logger.error("Bot startup failed", {
       error: error instanceof Error ? error.message : String(error)

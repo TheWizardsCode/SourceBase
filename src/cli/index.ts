@@ -17,6 +17,11 @@ const commands: Command[] = [
     usage: "sb add [--verbose] <url> [<url2> ...]",
   },
   {
+    name: "queue",
+    description: "Queue a URL for later processing",
+    usage: "sb queue [--verbose] <url> [<url2> ...]",
+  },
+  {
     name: "search",
     description: "Perform semantic search on indexed content",
     usage: "sb search <query>",
@@ -49,6 +54,7 @@ Options:
 Examples:
   sb add https://example.com/article
   sb add --verbose https://example.com/article
+  sb queue https://example.com/article
   sb search "machine learning"
   sb stats`);
 }
@@ -157,9 +163,15 @@ async function main(): Promise<number> {
       const { addCommand } = await import("./commands/add.js");
       const { exitCode } = await addCommand(commandArgs, { verbose });
       return exitCode;
-    case "search":
-      console.error("Error: 'search' command not yet implemented");
-      return 1;
+    case "queue":
+      if (commandArgs.length === 0) {
+        console.error("Error: 'queue' command requires at least one URL argument");
+        console.error("Usage: sb queue [--verbose] <url> [<url2> ...]");
+        return 2;
+      }
+      const { queueCommand } = await import("./commands/queue.js");
+      const { exitCode: queueExitCode } = await queueCommand(commandArgs, { verbose });
+      return queueExitCode;
     case "stats":
       console.error("Error: 'stats' command not yet implemented");
       return 1;

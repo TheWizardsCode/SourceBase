@@ -14,6 +14,7 @@ import { YouTubeApiClient } from "./ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "./llm/client.js";
 import { OpenAiCompatibleEmbeddingProvider } from "./llm/embeddings.js";
 import { Logger } from "./logger.js";
+import { StartupRecoveryService } from "./ingestion/startup-recovery.js";
 import { isLikelyContentQuery } from "./query/detector.js";
 import { QueryService } from "./query/service.js";
 
@@ -458,10 +459,52 @@ const bot = new DiscordBot({
     // Add message to queue for sequential processing
     // Queue status will be handled by onQueueUpdate callback
     await documentQueue.enqueue(message);
+    
+    // Save checkpoint after successful enqueue
+    // This ensures we know which message was last processed for startup recovery
+    try {
+      await repository.saveCheckpoint(config.DISCORD_CHANNEL_ID, message.id);
+      logger.debug("Checkpoint saved", { messageId: message.id });
+    } catch (error) {
+      logger.error("Failed to save checkpoint", {
+        messageId: message.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Don't throw - checkpoint failure shouldn't stop message processing
+    }
   }
 });
 
-// Initialize the queue from database before starting
+// Perform startup recovery to catch up on missed messages
+async function performStartupRecovery(): Promise<void> {
+  logger.info("Starting startup recovery for missed messages");
+  
+  try {
+    const recoveryService = new StartupRecoveryService({
+      discordClient: bot.getClient(),
+      repository,
+      documentQueue,
+      logger,
+      channelId: config.DISCORD_CHANNEL_ID,
+      maxMessages: config.STARTUP_RECOVERY_MAX_MESSAGES,
+    });
+
+    const result = await recoveryService.performRecovery();
+
+    logger.info("Startup recovery completed", {
+      messagesProcessed: result.messagesProcessed,
+      urlsFound: result.urlsFound,
+      urlsQueued: result.urlsQueued,
+      oldestMessageId: result.oldestMessageId,
+      newestMessageId: result.newestMessageId,
+    });
+  } catch (error) {
+    logger.error("Startup recovery failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Don't throw - we don't want recovery failures to prevent the bot from starting
+  }
+}
 async function startBot() {
   try {
     // Load any pending items from database
@@ -469,6 +512,12 @@ async function startBot() {
     
     // Start the bot
     await bot.start();
+    
+    // After bot starts and is connected, perform startup recovery
+    // to catch up on messages missed during downtime
+    if (config.STARTUP_RECOVERY_MAX_MESSAGES > 0) {
+      await performStartupRecovery();
+    }
     
     // After bot starts, restore status message tracking for pending items
     if (pendingItemsFromRestart.length > 0) {

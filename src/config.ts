@@ -28,7 +28,9 @@ const configSchema = z.object({
   ENABLE_YOUTUBE_CAPTIONS: z.enum(["true", "false"]).default("true").transform(v => v === "true"),
   // Backfill configuration
   BACKFILL_INTERVAL_MS: z.coerce.number().int().min(60000).default(3600000), // 1 hour default
-  MAX_BACKFILL_ATTEMPTS: z.coerce.number().int().min(1).default(3)
+  MAX_BACKFILL_ATTEMPTS: z.coerce.number().int().min(1).default(3),
+  // Startup recovery configuration
+  STARTUP_RECOVERY_MAX_MESSAGES: z.coerce.number().int().min(0).default(1000), // 0 to disable
 });
 
 const parsed = configSchema.safeParse(process.env);

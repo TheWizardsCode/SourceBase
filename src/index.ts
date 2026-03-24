@@ -476,48 +476,46 @@ async function restoreStatusMessages(): Promise<void> {
     count: pendingItemsFromRestart.length,
   });
 
+  // Group items by channel to send one queue status message per channel
+  const itemsByChannel = new Map<string, typeof pendingItemsFromRestart>();
   for (const item of pendingItemsFromRestart) {
+    const existing = itemsByChannel.get(item.discordChannelId) || [];
+    existing.push(item);
+    itemsByChannel.set(item.discordChannelId, existing);
+  }
+
+  // Send a single queue status message per channel
+  for (const [channelId, items] of itemsByChannel) {
     try {
-      // Try to fetch the original Discord message
-      const channel = await bot.getClient().channels.fetch(item.discordChannelId);
+      const channel = await bot.getClient().channels.fetch(channelId);
       if (!channel || !channel.isText()) {
-        logger.warn("Could not find channel for pending item", {
-          channelId: item.discordChannelId,
-          messageId: item.discordMessageId,
+        logger.warn("Could not find channel for pending items", {
+          channelId,
         });
         continue;
       }
 
-      const message = await (channel as TextChannel).messages.fetch(item.discordMessageId);
-      if (!message) {
-        logger.warn("Could not find original message for pending item", {
-          messageId: item.discordMessageId,
-          channelId: item.discordChannelId,
-        });
-        continue;
-      }
+      // Send a single queue status message showing queue length
+      const queueSize = items.length;
+      const messageContent = `⚙️ Resuming processing of ${queueSize} item${queueSize > 1 ? 's' : ''} from queue`;
+      const queueMsg = await (channel as TextChannel).send(messageContent);
+      queueStatusMessages.set(channelId, queueMsg);
 
-      // Create a progress status message for this item
-      // This ensures that when processing starts, onProgress can find the message
-      const statusMsg = await (channel as TextChannel).send(`⏳ Resuming processing of <${item.url}>...`);
-      statusMessages.set(item.discordMessageId, statusMsg);
-
-      logger.debug("Restored status message tracking", {
-        messageId: item.discordMessageId,
-        url: item.url,
+      logger.debug("Restored queue status message", {
+        channelId,
+        queueSize,
       });
     } catch (err) {
-      logger.warn("Failed to restore status message for pending item", {
-        messageId: item.discordMessageId,
-        url: item.url,
+      logger.warn("Failed to restore queue status message", {
+        channelId,
         error: err instanceof Error ? err.message : String(err),
       });
-      // Continue with other items - don't let one failure stop the rest
+      // Continue with other channels - don't let one failure stop the rest
     }
   }
 
   logger.info("Status message restoration complete", {
-    restoredCount: statusMessages.size,
+    channelsRestored: queueStatusMessages.size,
   });
 }
 

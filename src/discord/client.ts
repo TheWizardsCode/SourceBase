@@ -22,6 +22,10 @@ export class DiscordBot {
     });
   }
 
+  getClient(): Client {
+    return this.client;
+  }
+
   async start(): Promise<void> {
     this.client.once("ready", async (client) => {
       this.options.logger.info("Discord bot connected", {

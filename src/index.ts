@@ -1,4 +1,4 @@
-import type { Message } from "discord.js";
+import { Client, Intents, TextChannel, type Message } from "discord.js";
 import { config } from "./config.js";
 import { getDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
@@ -112,6 +112,12 @@ const statusMessages = new Map<string, Message>();
 
 // Track queue status message per channel
 const queueStatusMessages = new Map<string, Message>();
+
+// Keep track of pending items loaded from database for status restoration
+let pendingItemsFromRestart: Array<{ url: string; discordMessageId: string; discordChannelId: string }> = [];
+
+// Cache of real Discord channels for synthetic messages loaded from database
+const channelCache = new Map<string, TextChannel>();
 
 const ingestionService = new IngestionService({
   repository,
@@ -228,9 +234,18 @@ const documentQueue = new DocumentQueue({
   repository: queueRepository,
   onQueueUpdate: async (item, queueSize, status) => {
     try {
-      if (item.message.channel.type !== 'GUILD_TEXT') return;
-
       const channelId = item.message.channelId;
+      
+      // Use cached channel if available (for synthetic messages loaded from DB)
+      // otherwise use the real channel from the message
+      let textChannel: TextChannel;
+      const cachedChannel = channelCache.get(channelId);
+      if (cachedChannel) {
+        textChannel = cachedChannel;
+      } else {
+        if (item.message.channel.type !== 'GUILD_TEXT') return;
+        textChannel = item.message.channel as TextChannel;
+      }
 
       // Delete previous queue status message if it exists
       const previousMsg = queueStatusMessages.get(channelId);
@@ -248,7 +263,7 @@ const documentQueue = new DocumentQueue({
       if (status === 'processing') {
         // Create a new status message for progress tracking
         // This will be used by the onProgress callback
-        const statusMsg = await item.message.channel.send(`⏳ Processing <${item.url}>...`);
+        const statusMsg = await textChannel.send(`⏳ Processing <${item.url}>...`);
         // Store by message ID so onProgress can find it
         statusMessages.set(item.message.id, statusMsg);
       }
@@ -262,7 +277,7 @@ const documentQueue = new DocumentQueue({
       const messageContent = formatQueueMessage(item.url, queueSize, status);
 
       // Send new queue status message
-      const newQueueMsg = await item.message.channel.send(messageContent);
+      const newQueueMsg = await textChannel.send(messageContent);
       queueStatusMessages.set(channelId, newQueueMsg);
     } catch (err) {
       logger.warn("Failed to update queue status message", {
@@ -450,16 +465,74 @@ const bot = new DiscordBot({
 async function startBot() {
   try {
     // Load any pending items from database
-    await documentQueue.initialize();
+    pendingItemsFromRestart = await documentQueue.initialize();
     
     // Start the bot
     await bot.start();
+    
+    // After bot starts, restore status message tracking for pending items
+    if (pendingItemsFromRestart.length > 0) {
+      await restoreStatusMessages();
+    }
   } catch (error) {
     logger.error("Bot startup failed", {
       error: error instanceof Error ? error.message : String(error)
     });
     process.exitCode = 1;
   }
+}
+
+// Restore status message tracking after bot restart
+async function restoreStatusMessages(): Promise<void> {
+  logger.info("Restoring status message tracking for pending items", {
+    count: pendingItemsFromRestart.length,
+  });
+
+  // Group items by channel to send one queue status message per channel
+  const itemsByChannel = new Map<string, typeof pendingItemsFromRestart>();
+  for (const item of pendingItemsFromRestart) {
+    const existing = itemsByChannel.get(item.discordChannelId) || [];
+    existing.push(item);
+    itemsByChannel.set(item.discordChannelId, existing);
+  }
+
+  // Fetch and cache real Discord channels, then send queue status messages
+  for (const [channelId, items] of itemsByChannel) {
+    try {
+      const channel = await bot.getClient().channels.fetch(channelId);
+      if (!channel || !channel.isText()) {
+        logger.warn("Could not find channel for pending items", {
+          channelId,
+        });
+        continue;
+      }
+
+      // Cache the real channel for later use by onQueueUpdate
+      channelCache.set(channelId, channel as TextChannel);
+
+      // Send a single queue status message showing queue length
+      const queueSize = items.length;
+      const messageContent = `⚙️ Resuming processing of ${queueSize} item${queueSize > 1 ? 's' : ''} from queue`;
+      const queueMsg = await (channel as TextChannel).send(messageContent);
+      queueStatusMessages.set(channelId, queueMsg);
+
+      logger.debug("Restored queue status message", {
+        channelId,
+        queueSize,
+      });
+    } catch (err) {
+      logger.warn("Failed to restore queue status message", {
+        channelId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Continue with other channels - don't let one failure stop the rest
+    }
+  }
+
+  logger.info("Status message restoration complete", {
+    channelsRestored: queueStatusMessages.size,
+    channelsCached: channelCache.size,
+  });
 }
 
 startBot();

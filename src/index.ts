@@ -9,6 +9,7 @@ import { IngestionService } from "./ingestion/service.js";
 import type { ProgressUpdate, IngestionProgress, ProgressPhase } from "./ingestion/service.js";
 import { DocumentQueue, type QueueUpdateStatus } from "./ingestion/queue.js";
 import { CrawlService } from "./ingestion/crawl.js";
+import { extractCrawlSeedUrl } from "./ingestion/url.js";
 import { YouTubeApiClient } from "./ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "./llm/client.js";
 import { OpenAiCompatibleEmbeddingProvider } from "./llm/embeddings.js";
@@ -300,6 +301,13 @@ const bot = new DiscordBot({
     if (crawlService.isCrawlCommand(message.content)) {
       logger.info("Crawl command detected", { messageId: message.id });
 
+      // Extract the seed URL to show consistently throughout the crawl
+      const seedUrl = extractCrawlSeedUrl(message.content);
+      if (!seedUrl) {
+        await message.channel.send("❌ Invalid crawl command. Usage: `crawl https://example.com`");
+        return;
+      }
+
       // Send initial crawl status
       const crawlStatusMsg = await message.channel.send("🔍 Starting crawl...");
       const discoveredUrlsList: string[] = [];
@@ -313,8 +321,8 @@ const bot = new DiscordBot({
           requestDelayMs: config.CRAWL_DELAY_MS,
           onProgress: async (progress) => {
             if (progress.phase === "crawling") {
-              // Build the message with current state
-              let message = `🔍 Crawling <${progress.url}>\n`;
+              // Always show the seed URL at the start, not the current page being crawled
+              let message = `🔍 Crawling <${seedUrl}>\n`;
               if (discoveredUrlsList.length > 0) {
                 message += discoveredUrlsList.map((url, idx) => `${idx + 1}. <${url}>`).join("\n");
               }
@@ -322,7 +330,7 @@ const bot = new DiscordBot({
             } else if (progress.phase === "discovered") {
               discoveredUrlsList.push(progress.url);
               // Build the message with updated list
-              let message = `🔍 Crawling...\n`;
+              let message = `🔍 Crawling <${seedUrl}>\n`;
               message += discoveredUrlsList.map((url, idx) => `${idx + 1}. <${url}>`).join("\n");
               await crawlStatusMsg.edit(message);
             } else if (progress.phase === "complete") {

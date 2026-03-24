@@ -127,6 +127,40 @@ describe("StartupRecoveryService", () => {
     expect(result.urlsQueued).toBe(2);
   });
 
+  it("should report accurate skip counts", async () => {
+    const { repository, discordClient, documentQueue, logger, channel } = createMocks();
+    
+    repository.setCheckpoint("test-channel", "checkpoint-msg-id");
+    
+    const messages = [
+      createMockMessage("checkpoint-msg-id", "Old message", false),
+      createMockMessage("msg-1", "https://example.com/1", false), // valid
+      createMockMessage("msg-2", "Bot message https://example.com/2", true), // bot - skip
+      createMockMessage("msg-3", "No URLs here", false), // no URLs - skip
+      createMockMessage("msg-4", "https://example.com/4", false), // valid
+      createMockMessage("msg-5", "Another bot", true), // bot - skip
+    ];
+    
+    (channel as MockTextChannel).setMessages(messages);
+    
+    const service = new StartupRecoveryService({
+      discordClient,
+      repository,
+      documentQueue,
+      logger,
+      channelId: "test-channel",
+    });
+
+    const result = await service.performRecovery();
+
+    expect(result.messagesProcessed).toBe(2);
+    expect(result.messagesSkipped.total).toBe(3);
+    expect(result.messagesSkipped.botMessages).toBe(2);
+    expect(result.messagesSkipped.noUrls).toBe(1);
+    expect(result.urlsFound).toBe(2);
+    expect(result.urlsQueued).toBe(2);
+  });
+
   it("should handle errors gracefully and continue processing", async () => {
     const { repository, discordClient, documentQueue, logger, channel } = createMocks();
     

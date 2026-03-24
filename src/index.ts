@@ -493,6 +493,7 @@ async function performStartupRecovery(): Promise<void> {
 
     logger.info("Startup recovery completed", {
       messagesProcessed: result.messagesProcessed,
+      messagesSkipped: result.messagesSkipped,
       urlsFound: result.urlsFound,
       urlsQueued: result.urlsQueued,
       oldestMessageId: result.oldestMessageId,

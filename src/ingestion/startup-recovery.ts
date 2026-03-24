@@ -18,6 +18,11 @@ export interface StartupRecoveryOptions {
 
 export interface RecoveryResult {
   messagesProcessed: number;
+  messagesSkipped: {
+    botMessages: number;
+    noUrls: number;
+    total: number;
+  };
   urlsFound: number;
   urlsQueued: number;
   oldestMessageId: string | null;
@@ -49,6 +54,7 @@ export class StartupRecoveryService {
       this.options.logger.info("No checkpoint found, skipping startup recovery");
       return {
         messagesProcessed: 0,
+        messagesSkipped: { botMessages: 0, noUrls: 0, total: 0 },
         urlsFound: 0,
         urlsQueued: 0,
         oldestMessageId: null,
@@ -81,6 +87,7 @@ export class StartupRecoveryService {
       this.options.logger.info("No new messages to recover");
       return {
         messagesProcessed: 0,
+        messagesSkipped: { botMessages: 0, noUrls: 0, total: 0 },
         urlsFound: 0,
         urlsQueued: 0,
         oldestMessageId: null,
@@ -99,8 +106,11 @@ export class StartupRecoveryService {
 
     this.options.logger.info("Startup recovery completed", {
       messagesProcessed: result.messagesProcessed,
+      messagesSkipped: result.messagesSkipped,
       urlsFound: result.urlsFound,
       urlsQueued: result.urlsQueued,
+      oldestMessageId: result.oldestMessageId,
+      newestMessageId: result.newestMessageId,
     });
 
     return result;
@@ -172,48 +182,111 @@ export class StartupRecoveryService {
   private async processMessages(messages: Message[]): Promise<RecoveryResult> {
     let urlsFound = 0;
     let urlsQueued = 0;
+    let botMessagesSkipped = 0;
+    let noUrlsSkipped = 0;
     const oldestMessageId = messages[0]?.id ?? null;
     const newestMessageId = messages[messages.length - 1]?.id ?? null;
 
-    // Filter out bot messages and messages without URLs
-    const validMessages = messages.filter((message) => {
-      if (message.author.bot) {
-        return false;
-      }
-      const urls = extractUrls(message.content);
-      return urls.length > 0;
+    // Log the start of message processing
+    this.options.logger.info("Starting message processing", {
+      totalMessages: messages.length,
+      oldestMessageId,
+      newestMessageId,
     });
 
-    this.options.logger.info("Processing messages with URLs", {
+    // Filter and categorize messages
+    const validMessages: Message[] = [];
+    
+    for (const message of messages) {
+      if (message.author.bot) {
+        botMessagesSkipped++;
+        this.options.logger.debug("Skipping bot message", {
+          messageId: message.id,
+          authorId: message.author.id,
+        });
+        continue;
+      }
+      
+      const urls = extractUrls(message.content);
+      if (urls.length === 0) {
+        noUrlsSkipped++;
+        this.options.logger.debug("Skipping message with no URLs", {
+          messageId: message.id,
+          contentPreview: message.content.slice(0, 100),
+        });
+        continue;
+      }
+      
+      validMessages.push(message);
+    }
+
+    const totalSkipped = botMessagesSkipped + noUrlsSkipped;
+
+    this.options.logger.info("Message filtering complete", {
       totalMessages: messages.length,
       messagesWithUrls: validMessages.length,
+      messagesSkipped: {
+        botMessages: botMessagesSkipped,
+        noUrls: noUrlsSkipped,
+        total: totalSkipped,
+      },
+      skipRate: `${((totalSkipped / messages.length) * 100).toFixed(1)}%`,
     });
 
-    for (const message of validMessages) {
+    // Process valid messages
+    for (let i = 0; i < validMessages.length; i++) {
+      const message = validMessages[i];
       const urls = extractUrls(message.content);
       urlsFound += urls.length;
 
-      this.options.logger.debug("Enqueuing message URLs", {
+      this.options.logger.debug("Processing message for recovery", {
         messageId: message.id,
+        authorId: message.author.id,
         urlCount: urls.length,
         urls,
+        progress: `${i + 1}/${validMessages.length}`,
       });
 
       try {
         // Enqueue the entire message - the queue will handle URL extraction and deduplication
         await this.options.documentQueue.enqueue(message);
         urlsQueued += urls.length;
+        
+        this.options.logger.debug("Successfully enqueued message", {
+          messageId: message.id,
+          urlsEnqueued: urls.length,
+        });
       } catch (error) {
         this.options.logger.error("Failed to enqueue message during recovery", {
           messageId: message.id,
+          urlCount: urls.length,
+          urls,
           error: error instanceof Error ? error.message : String(error),
         });
         // Continue with other messages - don't let one failure stop the recovery
       }
     }
 
+    // Log completion summary
+    this.options.logger.info("Message processing complete", {
+      messagesProcessed: validMessages.length,
+      messagesSkipped: {
+        botMessages: botMessagesSkipped,
+        noUrls: noUrlsSkipped,
+        total: totalSkipped,
+      },
+      urlsFound,
+      urlsQueued,
+      urlsSuccessfullyEnqueued: `${((urlsQueued / urlsFound) * 100).toFixed(1)}%`,
+    });
+
     return {
       messagesProcessed: validMessages.length,
+      messagesSkipped: {
+        botMessages: botMessagesSkipped,
+        noUrls: noUrlsSkipped,
+        total: totalSkipped,
+      },
       urlsFound,
       urlsQueued,
       oldestMessageId,

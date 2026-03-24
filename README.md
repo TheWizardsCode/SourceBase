@@ -1,6 +1,15 @@
 # Discord Link Aggregation Bot
 
-TypeScript Discord bot for monitoring a channel and indexing shared links with semantic search capabilities.
+A TypeScript Discord bot that monitors channels, indexes shared links, and provides semantic search capabilities. Perfect for communities that want to build a searchable knowledge base from shared resources.
+
+## Overview
+
+SourceBase automatically extracts URLs from Discord messages, fetches content metadata, generates AI-powered summaries and embeddings, and stores everything in a searchable database. When you or your community members share links, the bot makes them discoverable through natural language search.
+
+**Key Use Cases:**
+- Build a searchable archive of resources shared in your Discord community
+- Quickly find previously shared articles, videos, and documentation
+- Create a knowledge base that grows organically as your community shares content
 
 ## Features
 
@@ -10,6 +19,27 @@ TypeScript Discord bot for monitoring a channel and indexing shared links with s
 - 🔍 **Semantic Search**: Search links by meaning, not just keywords
 - 📊 **Backfill Queue**: Automatic retry for failed operations with SLA tracking
 - 🎭 **Discord Reactions**: Success/failure feedback on message processing
+
+## Quick Start
+
+Want to get running quickly? Here's the minimal setup:
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Copy and fill environment variables
+cp .env.example .env
+# Edit .env and add: DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, DATABASE_URL, LLM_BASE_URL, LLM_MODEL
+
+# 3. Set up database
+npm run db:migrate
+
+# 4. Run the bot
+npm run start:dev
+```
+
+See [Local Setup](#local-setup) below for detailed instructions.
 
 ## Requirements
 
@@ -327,6 +357,41 @@ Test coverage includes:
 - Backfill queue operations
 - Database repository
 
+## Contributing
+
+We welcome contributions from the community! Here's how to get started:
+
+### Development Setup
+
+1. Fork and clone the repository
+2. Install dependencies: `npm install`
+3. Copy `.env.example` to `.env` and configure your environment
+4. Run tests to ensure everything works: `npm test`
+
+### Making Changes
+
+1. Create a feature branch: `git checkout -b feature/your-feature-name`
+2. Make your changes following the existing code style
+3. Add tests for new functionality
+4. Run the test suite: `npm test`
+5. Run linting: `npm run lint`
+6. Commit your changes with clear, descriptive messages
+
+### Pull Request Process
+
+1. Push your branch to your fork
+2. Open a Pull Request against the `main` branch
+3. Describe what your PR does and why
+4. Ensure all tests pass and the PR is up to date with `main`
+
+### Code Style
+
+- Follow TypeScript best practices
+- Use meaningful variable and function names
+- Add comments for complex logic
+- Keep functions focused and small
+- Write tests for new features
+
 ## License
 
-MIT
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

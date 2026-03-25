@@ -1,4 +1,4 @@
-const URL_REGEX = /https?:\/\/[^\s<>()]+/gi;
+const URL_REGEX = /(?:https?:\/\/|file:\/\/)[^\s<>()]+/gi;
 const CRAWL_REGEX = /(?:^|\s)crawl\b[\s:,-]+(https?:\/\/[^\s<>()]+)/i;
 const HREF_REGEX = /<a\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
 
@@ -44,7 +44,7 @@ export function normalizeDiscoveredUrls(baseUrl: string, links: string[]): strin
 
     try {
       const resolved = new URL(candidate, baseUrl);
-      if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:" && resolved.protocol !== "file:") {
         continue;
       }
 
@@ -107,6 +107,16 @@ export function normalizeYouTubeUrl(url: string): string | null {
 // PDF URL detection
 export function isPdfUrl(url: string): boolean {
   return PDF_PATTERN.test(url);
+}
+
+// File URL detection
+export function isFileUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "file:";
+  } catch {
+    return false;
+  }
 }
 
 export function normalizePdfUrl(url: string): string | null {

@@ -4,7 +4,7 @@ import { getDbPool, closeDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
 import { DocumentQueueRepository } from "./db/queue-repository.js";
 import { DiscordBot } from "./discord/client.js";
-import { ArticleExtractorContentExtractor, PdfContentExtractor } from "./ingestion/extractor.js";
+import { ArticleExtractorContentExtractor, PdfContentExtractor, FileContentExtractor } from "./ingestion/extractor.js";
 import { IngestionService } from "./ingestion/service.js";
 import type { ProgressUpdate, IngestionProgress, ProgressPhase } from "./ingestion/service.js";
 import { DocumentQueue, type QueueUpdateStatus } from "./ingestion/queue.js";
@@ -124,6 +124,7 @@ const ingestionService = new IngestionService({
   repository,
   extractor: new ArticleExtractorContentExtractor(),
   pdfExtractor: new PdfContentExtractor(),
+  fileExtractor: new FileContentExtractor(),
   summarizer: llmClient,
   embedder: embeddingProvider,
   logger,

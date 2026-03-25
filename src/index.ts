@@ -620,6 +620,9 @@ async function startBot() {
     // Start the bot
     await bot.start();
     
+    // Send startup notifications to channels (if any) - do this FIRST
+    await sendStartupNotifications();
+    
     // After bot starts and is connected, perform startup recovery
     // to catch up on messages missed during downtime
     if (config.STARTUP_RECOVERY_MAX_MESSAGES > 0) {
@@ -630,9 +633,6 @@ async function startBot() {
     if (pendingItemsFromRestart.length > 0) {
       await restoreStatusMessages();
     }
-
-    // Send startup notifications to channels (if any)
-    await sendStartupNotifications();
   } catch (error) {
     logger.error("Bot startup failed", {
       error: error instanceof Error ? error.message : String(error)

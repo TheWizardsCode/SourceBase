@@ -265,6 +265,42 @@ export class BackfillService {
           [batchSize]
         );
         items = reResult.rows as BackfillQueueRow[];
+      } else if (this.qdrantStore) {
+        // Only seed if qdrantStore is configured - otherwise skip seeding when items exist
+        const seededEmbeddings = await this.seedExistingEmbeddings(Math.floor(batchSize / 2));
+        if (seededEmbeddings > 0) {
+          this.logger.info(`Seeded ${seededEmbeddings} existing embeddings into backfill queue`);
+        }
+
+        const seedResult = await this.repository["pool"].query(
+          `
+          INSERT INTO backfill_queue (url, video_id, content_type, status, attempts, priority, created_at, updated_at, expires_at)
+          SELECT DISTINCT ON (l.url)
+            l.url,
+            NULL,
+            'embedding',
+            'pending',
+            0,
+            100,
+            NOW(),
+            NOW(),
+            NOW() + INTERVAL '24 hours'
+          FROM links l
+          WHERE l.embedding IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM backfill_queue bq
+            WHERE bq.url = l.url AND bq.content_type = 'embedding' AND bq.status IN ('pending', 'processing')
+          )
+          ORDER BY l.url
+          LIMIT $1
+          RETURNING url
+          `,
+          [Math.floor(batchSize / 2)]
+        );
+        const seeded = seedResult.rowCount ?? 0;
+        if (seeded > 0) {
+          this.logger.info(`Seeded ${seeded} new links into backfill queue`, { count: seeded });
+        }
       }
 
       if (items.length === 0) {
@@ -587,8 +623,8 @@ export class BackfillService {
 
   /**
    * Start periodic backfill processing with adaptive polling.
-   * When document_queue is empty, polls every 1 minute.
-   * When document_queue has items, uses the longer interval to avoid competing with ingestion.
+   * Always processes backfill items, but uses shorter interval when document_queue is empty.
+   * If document_queue has items, still processes but uses the longer interval to avoid competing.
    */
   startPeriodicProcessing(intervalMs: number = 60 * 60 * 1000): void {
     this.logger.info("Starting periodic backfill processing", { intervalMs });
@@ -600,14 +636,17 @@ export class BackfillService {
           this.logger.debug("Document queue empty, using adaptive poll interval", {
             adaptiveInterval: BackfillService.ADAPTIVE_POLL_INTERVAL_MS
           });
-          setTimeout(runAdaptivePoll, BackfillService.ADAPTIVE_POLL_INTERVAL_MS);
           void this.processQueue(BackfillService.ADAPTIVE_BATCH_SIZE);
+          setTimeout(runAdaptivePoll, BackfillService.ADAPTIVE_POLL_INTERVAL_MS);
           return;
         } else {
-          this.logger.debug("Document queue has items, using standard poll interval", {
+          this.logger.debug("Document queue has items, processing with longer interval", {
             queueDepth,
             standardInterval: intervalMs
           });
+          void this.processQueue(BackfillService.ADAPTIVE_BATCH_SIZE);
+          setTimeout(runAdaptivePoll, intervalMs);
+          return;
         }
       }
       setTimeout(runAdaptivePoll, intervalMs);

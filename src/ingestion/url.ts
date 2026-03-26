@@ -1,4 +1,4 @@
-const URL_REGEX = /https?:\/\/[^\s<>()]+/gi;
+const URL_REGEX = /(?:https?:\/\/|file:\/\/)[^\s<>()]+/gi;
 const CRAWL_REGEX = /(?:^|\s)crawl\b[\s:,-]+(https?:\/\/[^\s<>()]+)/i;
 const HREF_REGEX = /<a\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
 
@@ -14,6 +14,9 @@ const YOUTUBE_PATTERNS = {
 };
 
 const VIDEO_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/;
+
+// PDF URL patterns - detect direct links to PDF files
+const PDF_PATTERN = /https?:\/\/[^\s<>()]+\.pdf(\?[^\s<>()]*)?$/i;
 
 export function extractUrls(text: string): string[] {
   const matches = text.match(URL_REGEX) ?? [];
@@ -41,7 +44,7 @@ export function normalizeDiscoveredUrls(baseUrl: string, links: string[]): strin
 
     try {
       const resolved = new URL(candidate, baseUrl);
-      if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:" && resolved.protocol !== "file:") {
         continue;
       }
 
@@ -99,4 +102,33 @@ export function normalizeYouTubeUrl(url: string): string | null {
     return null;
   }
   return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+// PDF URL detection
+export function isPdfUrl(url: string): boolean {
+  return PDF_PATTERN.test(url);
+}
+
+// File URL detection
+export function isFileUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "file:";
+  } catch {
+    return false;
+  }
+}
+
+export function normalizePdfUrl(url: string): string | null {
+  if (!isPdfUrl(url)) {
+    return null;
+  }
+  // Clean up any trailing query parameters or fragments for consistency
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }

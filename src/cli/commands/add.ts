@@ -1,7 +1,7 @@
 import { config } from "../../config.js";
 import { getDbPool } from "../../db/client.js";
 import { LinkRepository } from "../../db/repository.js";
-import { ArticleExtractorContentExtractor } from "../../ingestion/extractor.js";
+import { ArticleExtractorContentExtractor, FileContentExtractor } from "../../ingestion/extractor.js";
 import { IngestionService, type ProgressUpdate, type IngestionProgress, type ProgressCallback } from "../../ingestion/service.js";
 import { YouTubeApiClient } from "../../ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "../../llm/client.js";
@@ -34,7 +34,7 @@ class SilentLogger extends Logger {
 function validateUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
+    return parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "file:";
   } catch {
     return false;
   }
@@ -122,6 +122,7 @@ async function processSingleUrl(
     const pool = getDbPool();
     const repository = new LinkRepository(pool);
     const extractor = new ArticleExtractorContentExtractor();
+    const fileExtractor = new FileContentExtractor();
     const llmClient = new OpenAiCompatibleLlmClient({
       baseUrl: config.LLM_BASE_URL,
       model: config.LLM_MODEL,
@@ -136,6 +137,7 @@ async function processSingleUrl(
     const customService = new IngestionService({
       repository,
       extractor,
+      fileExtractor,
       summarizer: llmClient,
       embedder: llmClient,
       logger,

@@ -21,7 +21,9 @@ export class QdrantVectorStore {
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = this.url + path;
     const opts: RequestInit = { method, headers: { "Content-Type": "application/json" } };
-    if (body !== undefined) opts.body = JSON.stringify(body);
+    if (body !== undefined) {
+      opts.body = JSON.stringify(body);
+    }
     const res = await fetch(url, opts);
     const text = await res.text();
     let json: T;
@@ -48,9 +50,9 @@ export class QdrantVectorStore {
   ): Promise<void> {
     if (!items.length) return;
     const points = items.map((item, i) => ({
-      id: String(item.id),
+      id: Number(item.id),
       vector: item.vector,
-      payload: payload?.[i] ?? { id: String(item.id) },
+      payload: payload?.[i] ?? { id: Number(item.id) },
     }));
     await this.request("PUT", "/collections/" + this.collection + "/points", { points });
   }
@@ -61,7 +63,7 @@ export class QdrantVectorStore {
     payload: Record<string, unknown>
   ): Promise<void> {
     await this.request("PUT", "/collections/" + this.collection + "/points", {
-      points: [{ id: String(id), vector, payload }],
+      points: [{ id: Number(id), vector, payload }],
     });
   }
 

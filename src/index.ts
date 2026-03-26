@@ -138,6 +138,15 @@ const backfillService = new BackfillService({
   embedder: embeddingProvider,
   summarizer: llmClient,
   youtubeClient,
+  qdrantStore: {
+    indexBatch: (collection, items) => qdrantStore.indexBatch(collection, items),
+  },
+  getDocumentQueueDepth: async () => {
+    const pending = await queueRepository.getPendingCount();
+    const queueSize = documentQueue.getQueueSize();
+    const isProcessing = documentQueue.isProcessingItem() ? 1 : 0;
+    return pending + queueSize + isProcessing;
+  },
 });
 
 const ingestionService = new IngestionService({

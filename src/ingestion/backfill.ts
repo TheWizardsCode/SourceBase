@@ -58,6 +58,10 @@ export interface BackfillServiceOptions {
     summarize(content: string, sessionId?: string): Promise<string>;
   };
   youtubeClient?: YouTubeApiClient;
+  qdrantStore?: {
+    indexBatch(collection: string, items: { id: number; vector: number[]; payload?: Record<string, unknown> }[]): Promise<void>;
+  };
+  getDocumentQueueDepth?: () => Promise<number>;
 }
 
 export class BackfillService {
@@ -70,8 +74,17 @@ export class BackfillService {
     summarize(content: string, sessionId?: string): Promise<string>;
   };
   private readonly youtubeClient?: YouTubeApiClient;
+  private readonly qdrantStore?: {
+    indexBatch(collection: string, items: { id: number; vector: number[]; payload?: Record<string, unknown> }[]): Promise<void>;
+  };
+  private readonly getDocumentQueueDepth?: () => Promise<number>;
   private isRunning = false;
   private lastMetrics: BackfillMetrics | null = null;
+  private idleStartTime: number | null = null;
+
+  private static readonly ADAPTIVE_POLL_INTERVAL_MS = 60000;
+  private static readonly ADAPTIVE_BATCH_SIZE = 5;
+  private static readonly MAX_IDLE_MS = 300000;
 
   constructor(options: BackfillServiceOptions) {
     this.repository = options.repository;
@@ -79,6 +92,8 @@ export class BackfillService {
     this.embedder = options.embedder;
     this.summarizer = options.summarizer;
     this.youtubeClient = options.youtubeClient;
+    this.qdrantStore = options.qdrantStore;
+    this.getDocumentQueueDepth = options.getDocumentQueueDepth;
   }
 
   /**
@@ -126,7 +141,11 @@ export class BackfillService {
    * Process the backfill queue.
    * If the queue is empty, automatically seed it from links that still need
    * embeddings (links.embedding IS NULL) so the backfill bootstraps itself.
-   * Should be called periodically (e.g., every hour via startPeriodicProcessing).
+   * Also seeds links with existing embeddings that are missing from Qdrant.
+   * 
+   * Adaptive polling: if document_queue has items, skip processing to avoid
+   * competing with ingestion. If document_queue is empty, process backfill items.
+   * After MAX_IDLE_MS of no document processing, process regardless.
    */
   async processQueue(batchSize: number = 10): Promise<void> {
     if (this.isRunning) {
@@ -140,7 +159,38 @@ export class BackfillService {
     try {
       this.logger.info("Starting backfill queue processing", { batchSize });
 
-      // Fetch pending items ordered by priority and creation time
+      let queueDepth = 0;
+      if (this.getDocumentQueueDepth) {
+        queueDepth = await this.getDocumentQueueDepth();
+      }
+
+      const isIdle = queueDepth === 0;
+      const now = Date.now();
+      
+      if (this.idleStartTime === null) {
+        this.idleStartTime = isIdle ? now : null;
+      }
+
+      const idleMs = this.idleStartTime ? now - this.idleStartTime : 0;
+      const shouldProcess = isIdle || idleMs >= BackfillService.MAX_IDLE_MS;
+
+      if (!shouldProcess) {
+        this.logger.debug("Skipping backfill - document queue has items and not idle long enough", {
+          queueDepth,
+          idleMs,
+          maxIdleMs: BackfillService.MAX_IDLE_MS
+        });
+        this.isRunning = false;
+        return;
+      }
+
+      if (isIdle) {
+        this.idleStartTime = now;
+      } else {
+        this.logger.info("Forcing backfill after max idle time", { idleMs, queueDepth });
+        this.idleStartTime = null;
+      }
+
       const result = await this.repository["pool"].query(
         `
         SELECT
@@ -158,9 +208,14 @@ export class BackfillService {
 
       let items = result.rows as BackfillQueueRow[];
 
-      // If queue is empty, seed it from links that still need embeddings
       if (items.length === 0) {
-        this.logger.debug("Backfill queue is empty — seeding from links without embeddings");
+        this.logger.debug("Backfill queue is empty — seeding from links");
+        
+        const seededEmbeddings = await this.seedExistingEmbeddings(batchSize);
+        if (seededEmbeddings > 0) {
+          this.logger.info(`Seeded ${seededEmbeddings} existing embeddings into backfill queue`);
+        }
+
         const seedResult = await this.repository["pool"].query(
           `
           INSERT INTO backfill_queue (url, video_id, content_type, status, attempts, priority, created_at, updated_at, expires_at)
@@ -195,7 +250,6 @@ export class BackfillService {
           return;
         }
 
-        // Re-fetch after seeding
         const reResult = await this.repository["pool"].query(
           `
           SELECT
@@ -235,6 +289,51 @@ export class BackfillService {
       });
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * Seed backfill queue with links that have existing embeddings but are missing from Qdrant.
+   * This handles the case where Qdrant was cleared but PostgreSQL still has embeddings.
+   */
+  private async seedExistingEmbeddings(batchSize: number): Promise<number> {
+    if (!this.qdrantStore) {
+      return 0;
+    }
+
+    try {
+      const result = await this.repository["pool"].query(
+        `
+        INSERT INTO backfill_queue (url, video_id, content_type, status, attempts, priority, created_at, updated_at, expires_at)
+        SELECT DISTINCT ON (l.url)
+          l.url,
+          NULL,
+          'embedding',
+          'pending',
+          0,
+          50,
+          NOW(),
+          NOW(),
+          NOW() + INTERVAL '24 hours'
+        FROM links l
+        WHERE l.embedding IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM backfill_queue bq
+          WHERE bq.url = l.url AND bq.content_type = 'embedding' AND bq.status IN ('pending', 'processing')
+        )
+        ORDER BY l.url
+        LIMIT $1
+        ON CONFLICT (url, content_type) DO NOTHING
+        RETURNING url
+        `,
+        [batchSize]
+      );
+      return result.rowCount ?? 0;
+    } catch (error) {
+      this.logger.warn("Failed to seed existing embeddings", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 0;
     }
   }
 
@@ -339,10 +438,34 @@ export class BackfillService {
 
     const embedding = await this.embedder.embed(content);
 
-    await this.repository.upsertLink({
+    const stored = await this.repository.upsertLink({
       url: link.url,
       embedding,
     });
+
+    if (this.qdrantStore && stored && (stored as any).id) {
+      try {
+        await this.qdrantStore.indexBatch("links_vectors", [{
+          id: (stored as any).id,
+          vector: embedding,
+          payload: {
+            url: link.url,
+            title: link.title,
+            summary: link.summary,
+            content: link.content,
+            transcript: link.transcript,
+            imageUrl: link.imageUrl,
+            metadata: link.metadata,
+          }
+        }]);
+        this.logger.debug("Indexed embedding to Qdrant", { url: link.url, id: (stored as any).id });
+      } catch (qdrantErr) {
+        this.logger.warn("Failed to index embedding to Qdrant", {
+          url: link.url,
+          error: qdrantErr instanceof Error ? qdrantErr.message : String(qdrantErr),
+        });
+      }
+    }
   }
 
   /**
@@ -463,18 +586,33 @@ export class BackfillService {
   }
 
   /**
-   * Start periodic backfill processing
+   * Start periodic backfill processing with adaptive polling.
+   * When document_queue is empty, polls every 1 minute.
+   * When document_queue has items, uses the longer interval to avoid competing with ingestion.
    */
   startPeriodicProcessing(intervalMs: number = 60 * 60 * 1000): void {
-    // Default: every hour
     this.logger.info("Starting periodic backfill processing", { intervalMs });
 
-    // Process immediately
-    void this.processQueue();
+    const runAdaptivePoll = async () => {
+      if (this.getDocumentQueueDepth) {
+        const queueDepth = await this.getDocumentQueueDepth();
+        if (queueDepth === 0) {
+          this.logger.debug("Document queue empty, using adaptive poll interval", {
+            adaptiveInterval: BackfillService.ADAPTIVE_POLL_INTERVAL_MS
+          });
+          setTimeout(runAdaptivePoll, BackfillService.ADAPTIVE_POLL_INTERVAL_MS);
+          void this.processQueue(BackfillService.ADAPTIVE_BATCH_SIZE);
+          return;
+        } else {
+          this.logger.debug("Document queue has items, using standard poll interval", {
+            queueDepth,
+            standardInterval: intervalMs
+          });
+        }
+      }
+      setTimeout(runAdaptivePoll, intervalMs);
+    };
 
-    // Then schedule periodic processing
-    setInterval(() => {
-      void this.processQueue();
-    }, intervalMs);
+    setTimeout(runAdaptivePoll, BackfillService.ADAPTIVE_POLL_INTERVAL_MS);
   }
 }

@@ -318,57 +318,6 @@ export class IngestionService {
             }
           }
 
-          // ----- Embedding (with chunking) -----
-          const embeddingText = [extracted.title, summary, extracted.content]
-            .filter(Boolean)
-            .join("\n\n")
-            .trim();
-          let embedding: number[] | null = null;
-          let fullEmbedding: number[] | null = null;
-          if (embeddingText) {
-            const MAX_EMBED_CHARS = 8000;
-            const embedChunks = this.chunkText(embeddingText, MAX_EMBED_CHARS);
-            this.options.logger.info("Embedding chunking", { url, batches: embedChunks.length });
-            const vectors: number[][] = [];
-            for (let i = 0; i < embedChunks.length; i++) {
-              const chunk = embedChunks[i];
-              this.options.logger.debug("Embedding batch start", { url, messageId: message.id, batch: i + 1, of: embedChunks.length, chunkLength: chunk.length });
-
-              // Report chunk-level progress
-              progress.phase = "embedding";
-              await this.reportProgress(
-                {
-                  phase: "embedding",
-                  url,
-                  current: currentIndex + 1,
-                  total: allUrls.length,
-                  isUpdate,
-                  chunkCurrent: i + 1,
-                  chunkTotal: embedChunks.length,
-                  chunkType: "embedding"
-                },
-                progress
-              );
-
-              try {
-                const vec = await this.options.embedder.embed(chunk);
-                this.options.logger.debug("Embedding batch complete", { url, batch: i + 1, vectorLength: vec.length });
-                vectors.push(vec);
-              } catch (embErr) {
-                this.options.logger.warn('Failed to embed a chunk', {
-                  url,
-                  messageId: message.id,
-                  batch: i + 1,
-                  error: embErr instanceof Error ? embErr.message : String(embErr)
-                });
-                // Continue; we may still have some vectors to average
-              }
-            }
-            fullEmbedding = this.averageVectors(vectors);
-            embedding = fullEmbedding ? fullEmbedding.slice() : null;
-            if (embedding) this.options.logger.debug("Embedding averaged", { url, embeddingDim: embedding.length });
-          }
-
           // Report storing phase
           progress.phase = "storing";
           await this.reportProgress(
@@ -376,13 +325,14 @@ export class IngestionService {
             progress
           );
 
-          const stored: any = await this.options.repository.upsertLink({
+          // Embedding is deferred to BackfillService - store with null embedding
+          await this.options.repository.upsertLink({
             url,
             title: extracted.title,
             summary,
             content: extracted.content,
             imageUrl: extracted.imageUrl,
-            embedding,
+            embedding: null,
             metadata: {
               ...extracted.metadata,
               discordMessageId: message.id,
@@ -390,39 +340,6 @@ export class IngestionService {
               discordAuthorId: message.author.id
             }
           });
-
-          // If an ANN provider is configured, index the original embedding
-          // before any DB-side projection/truncation. We captured the
-          // `embedding` variable earlier which may have been resized for DB;
-          // to preserve best fidelity we try to index the averaged vectors
-          // from `vectors` if available. The repo.upsertLink returned object
-          // should include the assigned `id` we use as the ANN primary key.
-          try {
-            const ann = this.options.ann;
-            if (ann && stored && (stored as any).id) {
-              // Prefer indexing the full pre-resize averaged vector (if available).
-              const vectorToIndex = fullEmbedding && fullEmbedding.length ? fullEmbedding : embedding;
-              if (vectorToIndex && vectorToIndex.length) {
-                await ann.indexBatch(ann.collection, [{
-                  id: (stored as any).id,
-                  vector: vectorToIndex,
-                  payload: {
-                    url,
-                    title: extracted.title,
-                    summary,
-                    content: extracted.content,
-                    imageUrl: extracted.imageUrl,
-                    metadata: extracted.metadata,
-                    discordMessageId: message.id,
-                    discordChannelId: message.channelId,
-                    discordAuthorId: message.author.id
-                  }
-                }]);
-              }
-            }
-          } catch (annErr) {
-            this.options.logger.warn("Failed to index embedding into ANN", { url, error: annErr instanceof Error ? annErr.message : String(annErr) });
-          }
 
           this.options.logger.info('Ingested URL from message', {
             url,
@@ -537,11 +454,7 @@ export class IngestionService {
 
       const summary = content ? await this.options.summarizer.summarize(content, sessionId) : null;
 
-      // Generate embedding from best available content
-      const embeddingText = transcript
-        ? [metadata.title, transcript].filter(Boolean).join("\n\n").trim()
-        : [metadata.title, summary, metadata.description].filter(Boolean).join("\n\n").trim();
-      let embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
+      // Embedding is deferred to BackfillService - store with null embedding
 
       // Report storing phase
       progress.phase = "storing";
@@ -557,7 +470,7 @@ export class IngestionService {
         content: metadata.description,
         transcript,
         imageUrl: metadata.thumbnailUrl,
-        embedding,
+        embedding: null,
         metadata: {
           discordMessageId: message.id,
           discordChannelId: message.channelId,
@@ -659,40 +572,7 @@ export class IngestionService {
         }
       }
 
-      // Generate embedding from PDF content
-      const embeddingText = [extracted.title, summary, extracted.content]
-        .filter(Boolean)
-        .join("\n\n")
-        .trim();
-      
-      let embedding: number[] | null = null;
-      let fullEmbedding: number[] | null = null;
-      
-      if (embeddingText) {
-        progress.phase = "embedding";
-        await this.reportProgress(
-          {
-            phase: "embedding",
-            url,
-            current: currentIndex,
-            total: totalUrls,
-            isUpdate
-          },
-          progress
-        );
-
-        try {
-          const vec = await this.options.embedder.embed(embeddingText);
-          fullEmbedding = vec;
-          embedding = vec.slice();
-        } catch (embErr) {
-          this.options.logger.warn('Failed to embed PDF content', {
-            url,
-            messageId: message.id,
-            error: embErr instanceof Error ? embErr.message : String(embErr)
-          });
-        }
-      }
+      // Embedding is deferred to BackfillService - store with null embedding
 
       // Report storing phase
       progress.phase = "storing";
@@ -702,13 +582,13 @@ export class IngestionService {
       );
 
       // Store in repository with PDF-specific metadata
-      const stored = await this.options.repository.upsertLink({
+      await this.options.repository.upsertLink({
         url,
         title: extracted.title,
         summary,
         content: extracted.content,
         imageUrl: extracted.imageUrl,
-        embedding,
+        embedding: null,
         metadata: {
           discordMessageId: message.id,
           discordChannelId: message.channelId,
@@ -724,33 +604,6 @@ export class IngestionService {
           pdfVersion: extracted.metadata.pdfVersion ?? null
         }
       });
-
-      // If an ANN provider is configured, index the original embedding
-      try {
-        const ann = this.options.ann;
-        if (ann && stored && (stored as any).id) {
-          const vectorToIndex = fullEmbedding && fullEmbedding.length ? fullEmbedding : embedding;
-          if (vectorToIndex && vectorToIndex.length) {
-            await ann.indexBatch(ann.collection, [{
-              id: (stored as any).id,
-              vector: vectorToIndex,
-              payload: {
-                url,
-                title: extracted.title,
-                summary,
-                content: extracted.content,
-                imageUrl: extracted.imageUrl,
-                metadata: extracted.metadata,
-                discordMessageId: message.id,
-                discordChannelId: message.channelId,
-                discordAuthorId: message.author.id
-              }
-            }]);
-          }
-        }
-      } catch (annErr) {
-        this.options.logger.warn("Failed to index embedding into ANN", { url, error: annErr instanceof Error ? annErr.message : String(annErr) });
-      }
 
       this.options.logger.info("Ingested PDF URL", {
         url,
@@ -844,40 +697,7 @@ export class IngestionService {
         }
       }
 
-      // Generate embedding from file content
-      const embeddingText = [extracted.title, summary, extracted.content]
-        .filter(Boolean)
-        .join("\n\n")
-        .trim();
-      
-      let embedding: number[] | null = null;
-      let fullEmbedding: number[] | null = null;
-      
-      if (embeddingText) {
-        progress.phase = "embedding";
-        await this.reportProgress(
-          {
-            phase: "embedding",
-            url,
-            current: currentIndex,
-            total: totalUrls,
-            isUpdate
-          },
-          progress
-        );
-
-        try {
-          const vec = await this.options.embedder.embed(embeddingText);
-          fullEmbedding = vec;
-          embedding = vec.slice();
-        } catch (embErr) {
-          this.options.logger.warn('Failed to embed file content', {
-            url,
-            messageId: message.id,
-            error: embErr instanceof Error ? embErr.message : String(embErr)
-          });
-        }
-      }
+      // Embedding is deferred to BackfillService - store with null embedding
 
       // Report storing phase
       progress.phase = "storing";
@@ -887,13 +707,13 @@ export class IngestionService {
       );
 
       // Store in repository with file-specific metadata
-      const stored = await this.options.repository.upsertLink({
+      await this.options.repository.upsertLink({
         url,
         title: extracted.title,
         summary,
         content: extracted.content,
         imageUrl: extracted.imageUrl,
-        embedding,
+        embedding: null,
         metadata: {
           discordMessageId: message.id,
           discordChannelId: message.channelId,
@@ -908,33 +728,6 @@ export class IngestionService {
           )
         }
       });
-
-      // If an ANN provider is configured, index the original embedding
-      try {
-        const ann = this.options.ann;
-        if (ann && stored && (stored as any).id) {
-          const vectorToIndex = fullEmbedding && fullEmbedding.length ? fullEmbedding : embedding;
-          if (vectorToIndex && vectorToIndex.length) {
-            await ann.indexBatch(ann.collection, [{
-              id: (stored as any).id,
-              vector: vectorToIndex,
-              payload: {
-                url,
-                title: extracted.title,
-                summary,
-                content: extracted.content,
-                imageUrl: extracted.imageUrl,
-                metadata: extracted.metadata,
-                discordMessageId: message.id,
-                discordChannelId: message.channelId,
-                discordAuthorId: (message as any).author?.id
-              }
-            }]);
-          }
-        }
-      } catch (annErr) {
-        this.options.logger.warn("Failed to index embedding into ANN", { url, error: annErr instanceof Error ? annErr.message : String(annErr) });
-      }
 
       this.options.logger.info("Ingested file URL", {
         url,

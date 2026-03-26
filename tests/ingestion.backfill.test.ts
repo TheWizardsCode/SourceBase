@@ -118,8 +118,9 @@ describe("BackfillService", () => {
 
     it("handles empty queue gracefully", async () => {
       // First: empty backfill_queue SELECT
-      // Second: seed INSERT/SELECT from links → 0 rows (no links without embeddings in mock)
-      // Third: re-fetch backfill_queue after seeding → 0 rows
+      // Second: seedExistingEmbeddings (no qdrantStore configured, returns 0)
+      // Third: seed INSERT/SELECT from links → 0 rows (no links without embeddings in mock)
+      // Fourth: re-fetch backfill_queue after seeding → 0 rows
       mockPool.query
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })
@@ -128,7 +129,7 @@ describe("BackfillService", () => {
       await service.processQueue();
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        "Backfill queue is empty — seeding from links without embeddings"
+        "Backfill queue is empty — seeding from links"
       );
     });
 

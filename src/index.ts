@@ -1,4 +1,5 @@
 import { Client, Intents, TextChannel, type Message } from "discord.js";
+import { getQdrantVectorStore, type QdrantVectorStore } from "./vector/qdrant-store.js";
 import { config } from "./config.js";
 import { getDbPool, closeDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
@@ -6,6 +7,7 @@ import { DocumentQueueRepository } from "./db/queue-repository.js";
 import { DiscordBot } from "./discord/client.js";
 import { ArticleExtractorContentExtractor, PdfContentExtractor, FileContentExtractor } from "./ingestion/extractor.js";
 import { IngestionService } from "./ingestion/service.js";
+import { BackfillService } from "./ingestion/backfill.js";
 import type { ProgressUpdate, IngestionProgress, ProgressPhase } from "./ingestion/service.js";
 import { DocumentQueue, type QueueUpdateStatus } from "./ingestion/queue.js";
 import { CrawlService } from "./ingestion/crawl.js";
@@ -94,11 +96,21 @@ const repository = new LinkRepository(getDbPool());
 const llmClient = new OpenAiCompatibleLlmClient({
   baseUrl: config.LLM_BASE_URL,
   model: config.LLM_MODEL,
+  embeddingModel: config.LLM_EMBEDDING_MODEL,
   maxRetries: config.LLM_MAX_RETRIES,
   retryDelayMs: config.LLM_RETRY_DELAY_MS
 });
 const embeddingProvider = new OpenAiCompatibleEmbeddingProvider(llmClient);
-const queryService = new QueryService(repository, embeddingProvider);
+
+// Qdrant vector store for high-dimensional embeddings (supports >2000D, unlike pgvector HNSW)
+const qdrantStore: QdrantVectorStore = getQdrantVectorStore();
+
+// Wrapper to make qdrantStore compatible with QueryService's SearchableLinkStore interface
+const qdrantSearchAdapter = {
+  searchSimilarLinks: (embedding: number[], limit: number) => qdrantStore.search(embedding, limit),
+};
+
+const queryService = new QueryService(qdrantSearchAdapter, embeddingProvider);
 
 // Initialize YouTube API client if API key is configured
 const youtubeClient = new YouTubeApiClient(logger);
@@ -120,6 +132,14 @@ let pendingItemsFromRestart: Array<{ url: string; discordMessageId: string; disc
 // Cache of real Discord channels for synthetic messages loaded from database
 const channelCache = new Map<string, TextChannel>();
 
+const backfillService = new BackfillService({
+  repository,
+  logger,
+  embedder: embeddingProvider,
+  summarizer: llmClient,
+  youtubeClient,
+});
+
 const ingestionService = new IngestionService({
   repository,
   extractor: new ArticleExtractorContentExtractor(),
@@ -132,6 +152,10 @@ const ingestionService = new IngestionService({
   failureReaction: config.INGEST_FAILURE_REACTION,
   updateReaction: config.INGEST_UPDATE_REACTION,
   youtubeClient,
+  ann: {
+    collection: config.QDRANT_COLLECTION,
+    indexBatch: (collection, items) => qdrantStore.indexBatch(collection, items),
+  },
   onProgress: async (update, overall, messageId?: string) => {
     try {
       // Find the status message using the message ID from the first URL if available
@@ -633,6 +657,9 @@ async function startBot() {
 
     // Send startup notifications to channels (if any)
     await sendStartupNotifications();
+
+    // Start periodic backfill queue processing (re-embed/update existing links)
+    backfillService.startPeriodicProcessing(config.BACKFILL_INTERVAL_MS);
   } catch (error) {
     logger.error("Bot startup failed", {
       error: error instanceof Error ? error.message : String(error)

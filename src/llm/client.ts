@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { config } from "../config.js";
 
 export interface OpenAiChatMessage {
   role: "system" | "user" | "assistant";
@@ -22,6 +23,10 @@ export interface LlmClientOptions {
   model: string;
   maxRetries: number;
   retryDelayMs: number;
+  // Optional separate model to use for embeddings (some proxies expose a dedicated embed model)
+  embeddingModel?: string;
+  // Optional embedding batch size override
+  embeddingBatchSize?: number;
 }
 
 export class OpenAiCompatibleLlmClient {
@@ -32,16 +37,39 @@ export class OpenAiCompatibleLlmClient {
   }
 
   async embed(input: string): Promise<number[]> {
-    const response = await this.requestWithRetry<EmbeddingResponse>("/embeddings", {
-      model: this.options.model,
-      input
-    });
+    const results = await this.embedBatch([input]);
+    return results[0];
+  }
 
-    if (!response.data?.length || !Array.isArray(response.data[0].embedding)) {
-      throw new Error("Embedding response missing embedding vector");
+  async embedBatch(inputs: string[]): Promise<number[][]> {
+    if (!Array.isArray(inputs) || inputs.length === 0) return [];
+    const model = this.options.embeddingModel ?? this.options.model;
+    // Determine batch size: explicit option -> config -> default 2048
+    const batchSize = this.options.embeddingBatchSize ?? config.LLM_EMBEDDING_BATCH_SIZE ?? 2048;
+
+    const allEmbeddings: number[][] = [];
+    for (let i = 0; i < inputs.length; i += batchSize) {
+      const slice = inputs.slice(i, i + batchSize);
+      const response = await this.requestWithRetry<EmbeddingResponse>("/embeddings", {
+        model,
+        input: slice,
+      });
+
+      if (!response.data || !Array.isArray(response.data)) {
+        throw new Error("Embedding response missing data array");
+      }
+
+      // Ensure embeddings present for each input
+      for (let j = 0; j < response.data.length; j++) {
+        const item = response.data[j];
+        if (!item || !Array.isArray(item.embedding)) {
+          throw new Error("Embedding response missing embedding vector for one or more inputs");
+        }
+        allEmbeddings.push(item.embedding);
+      }
     }
 
-    return response.data[0].embedding;
+    return allEmbeddings;
   }
 
   async summarize(content: string, sessionId?: string): Promise<string> {

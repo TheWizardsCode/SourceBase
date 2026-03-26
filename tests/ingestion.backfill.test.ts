@@ -43,13 +43,13 @@ describe("BackfillService", () => {
       fetchCaptions: vi.fn(),
     } as unknown as YouTubeApiClient;
 
-    service = new BackfillService(
-      mockRepository,
-      mockLogger,
-      mockEmbedder,
-      mockSummarizer,
-      mockYoutubeClient
-    );
+    service = new BackfillService({
+      repository: mockRepository,
+      logger: mockLogger,
+      embedder: mockEmbedder,
+      summarizer: mockSummarizer,
+      youtubeClient: mockYoutubeClient,
+    });
   });
 
   describe("enqueue", () => {
@@ -117,12 +117,18 @@ describe("BackfillService", () => {
     });
 
     it("handles empty queue gracefully", async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [] });
+      // First: empty backfill_queue SELECT
+      // Second: seed INSERT/SELECT from links → 0 rows (no links without embeddings in mock)
+      // Third: re-fetch backfill_queue after seeding → 0 rows
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [] });
 
       await service.processQueue();
 
       expect(mockLogger.debug).toHaveBeenCalledWith(
-        "No pending items in backfill queue"
+        "Backfill queue is empty — seeding from links without embeddings"
       );
     });
 

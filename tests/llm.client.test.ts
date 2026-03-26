@@ -4,22 +4,30 @@ import { OpenAiCompatibleLlmClient } from "../src/llm/client.js";
 
 describe("OpenAiCompatibleLlmClient", () => {
   it("returns embedding vectors from proxy response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: [0.1, 0.2] }] })
-      })
-    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ embedding: [0.1, 0.2] }] })
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
 
     const client = new OpenAiCompatibleLlmClient({
       baseUrl: "http://llm.local/v1",
       model: "test-model",
+      embeddingModel: "embed",
       maxRetries: 0,
       retryDelayMs: 0
     });
 
     await expect(client.embed("abc")).resolves.toEqual([0.1, 0.2]);
+
+    // Ensure the request used the embedding model name
+    expect(fetchMock).toHaveBeenCalled();
+    const [[url, opts]] = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(url).toContain("/embeddings");
+    const body = JSON.parse(String(opts?.body));
+    expect(body.model).toBe("embed");
+    expect(body.input).toEqual(["abc"]);
   });
 
   it("retries on failures and eventually returns summary", async () => {

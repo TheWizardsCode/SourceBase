@@ -6,6 +6,7 @@ import { IngestionService, type ProgressUpdate, type IngestionProgress, type Pro
 import { YouTubeApiClient } from "../../ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "../../llm/client.js";
 import { Logger } from "../../logger.js";
+import { getQdrantVectorStore } from "../../vector/qdrant-store.js";
 
 interface AddOptions {
   verbose?: boolean;
@@ -145,6 +146,10 @@ async function processSingleUrl(
       failureReaction: config.INGEST_FAILURE_REACTION,
       updateReaction: config.INGEST_UPDATE_REACTION,
       youtubeClient,
+      ann: {
+        collection: config.QDRANT_COLLECTION,
+        indexBatch: (collection, items) => getQdrantVectorStore().indexBatch(collection, items),
+      },
       onProgress: progressCallback
     });
 

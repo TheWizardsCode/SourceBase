@@ -71,7 +71,7 @@ export interface IngestionServiceOptions {
   // returned DB id as the ANN primary key.
   ann?: {
     collection: string;
-    indexBatch(collection: string, items: { id: number; vector: number[] }[]): Promise<void>;
+    indexBatch(collection: string, items: { id: number; vector: number[]; payload?: Record<string, unknown> }[]): Promise<void>;
   };
   // Optional progress callback for real-time status updates
   onProgress?: ProgressCallback;
@@ -403,7 +403,21 @@ export class IngestionService {
               // Prefer indexing the full pre-resize averaged vector (if available).
               const vectorToIndex = fullEmbedding && fullEmbedding.length ? fullEmbedding : embedding;
               if (vectorToIndex && vectorToIndex.length) {
-                await ann.indexBatch(ann.collection, [{ id: (stored as any).id, vector: vectorToIndex }]);
+                await ann.indexBatch(ann.collection, [{
+                  id: (stored as any).id,
+                  vector: vectorToIndex,
+                  payload: {
+                    url,
+                    title: extracted.title,
+                    summary,
+                    content: extracted.content,
+                    imageUrl: extracted.imageUrl,
+                    metadata: extracted.metadata,
+                    discordMessageId: message.id,
+                    discordChannelId: message.channelId,
+                    discordAuthorId: message.author.id
+                  }
+                }]);
               }
             }
           } catch (annErr) {
@@ -717,7 +731,21 @@ export class IngestionService {
         if (ann && stored && (stored as any).id) {
           const vectorToIndex = fullEmbedding && fullEmbedding.length ? fullEmbedding : embedding;
           if (vectorToIndex && vectorToIndex.length) {
-            await ann.indexBatch(ann.collection, [{ id: (stored as any).id, vector: vectorToIndex }]);
+            await ann.indexBatch(ann.collection, [{
+              id: (stored as any).id,
+              vector: vectorToIndex,
+              payload: {
+                url,
+                title: extracted.title,
+                summary,
+                content: extracted.content,
+                imageUrl: extracted.imageUrl,
+                metadata: extracted.metadata,
+                discordMessageId: message.id,
+                discordChannelId: message.channelId,
+                discordAuthorId: message.author.id
+              }
+            }]);
           }
         }
       } catch (annErr) {
@@ -887,7 +915,21 @@ export class IngestionService {
         if (ann && stored && (stored as any).id) {
           const vectorToIndex = fullEmbedding && fullEmbedding.length ? fullEmbedding : embedding;
           if (vectorToIndex && vectorToIndex.length) {
-            await ann.indexBatch(ann.collection, [{ id: (stored as any).id, vector: vectorToIndex }]);
+            await ann.indexBatch(ann.collection, [{
+              id: (stored as any).id,
+              vector: vectorToIndex,
+              payload: {
+                url,
+                title: extracted.title,
+                summary,
+                content: extracted.content,
+                imageUrl: extracted.imageUrl,
+                metadata: extracted.metadata,
+                discordMessageId: message.id,
+                discordChannelId: message.channelId,
+                discordAuthorId: (message as any).author?.id
+              }
+            }]);
           }
         }
       } catch (annErr) {

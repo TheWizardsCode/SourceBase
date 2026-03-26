@@ -1,4 +1,5 @@
 import { Client, Intents, TextChannel, type Message } from "discord.js";
+import { getQdrantVectorStore, type QdrantVectorStore } from "./vector/qdrant-store.js";
 import { config } from "./config.js";
 import { getDbPool, closeDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
@@ -100,7 +101,16 @@ const llmClient = new OpenAiCompatibleLlmClient({
   retryDelayMs: config.LLM_RETRY_DELAY_MS
 });
 const embeddingProvider = new OpenAiCompatibleEmbeddingProvider(llmClient);
-const queryService = new QueryService(repository, embeddingProvider);
+
+// Qdrant vector store for high-dimensional embeddings (supports >2000D, unlike pgvector HNSW)
+const qdrantStore: QdrantVectorStore = getQdrantVectorStore();
+
+// Wrapper to make qdrantStore compatible with QueryService's SearchableLinkStore interface
+const qdrantSearchAdapter = {
+  searchSimilarLinks: (embedding: number[], limit: number) => qdrantStore.search(embedding, limit),
+};
+
+const queryService = new QueryService(qdrantSearchAdapter, embeddingProvider);
 
 // Initialize YouTube API client if API key is configured
 const youtubeClient = new YouTubeApiClient(logger);
@@ -142,6 +152,10 @@ const ingestionService = new IngestionService({
   failureReaction: config.INGEST_FAILURE_REACTION,
   updateReaction: config.INGEST_UPDATE_REACTION,
   youtubeClient,
+  ann: {
+    collection: config.QDRANT_COLLECTION,
+    indexBatch: (collection, items) => qdrantStore.indexBatch(collection, items),
+  },
   onProgress: async (update, overall, messageId?: string) => {
     try {
       // Find the status message using the message ID from the first URL if available

@@ -8,6 +8,8 @@ const configSchema = z.object({
   DISCORD_CHANNEL_ID: z.string().min(1, "DISCORD_CHANNEL_ID is required"),
   LLM_BASE_URL: z.string().url().default("http://localhost:11434/v1"),
   LLM_MODEL: z.string().min(1).default("gpt-4o-mini"),
+  // Optional: separate model name to use for embeddings (e.g. "embed")
+  LLM_EMBEDDING_MODEL: z.string().optional(),
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
   LLM_RETRY_DELAY_MS: z.coerce.number().int().min(0).default(250),
   // Summarizer tuning (tokens ~= characters/4)

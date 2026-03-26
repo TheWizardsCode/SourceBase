@@ -22,6 +22,8 @@ export interface LlmClientOptions {
   model: string;
   maxRetries: number;
   retryDelayMs: number;
+  // Optional separate model to use for embeddings (some proxies expose a dedicated embed model)
+  embeddingModel?: string;
 }
 
 export class OpenAiCompatibleLlmClient {
@@ -32,9 +34,10 @@ export class OpenAiCompatibleLlmClient {
   }
 
   async embed(input: string): Promise<number[]> {
+    const model = this.options.embeddingModel ?? this.options.model;
     const response = await this.requestWithRetry<EmbeddingResponse>("/embeddings", {
-      model: this.options.model,
-      input
+      model,
+      input,
     });
 
     if (!response.data?.length || !Array.isArray(response.data[0].embedding)) {

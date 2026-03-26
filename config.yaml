@@ -1,0 +1,14 @@
+# Optional YAML configuration for SourceBase
+# Values here override defaults when you load this file in your deployment
+# This repository currently reads environment variables from .env; this
+# YAML file is provided for convenience if you prefer YAML-based config.
+
+# Set a separate model name for embedding requests (e.g. the proxy model named
+# "embed"). Leave empty to use the main LLM model.
+LLM_EMBEDDING_MODEL: "embed"
+
+# Example other LLM settings you may want to declare here:
+# LLM_BASE_URL: "http://192.168.0.199:8000/v1"
+# LLM_MODEL: "gpt120"
+# LLM_MAX_RETRIES: 20
+# LLM_RETRY_DELAY_MS: 250

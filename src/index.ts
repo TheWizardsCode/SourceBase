@@ -94,6 +94,7 @@ const repository = new LinkRepository(getDbPool());
 const llmClient = new OpenAiCompatibleLlmClient({
   baseUrl: config.LLM_BASE_URL,
   model: config.LLM_MODEL,
+  embeddingModel: config.LLM_EMBEDDING_MODEL,
   maxRetries: config.LLM_MAX_RETRIES,
   retryDelayMs: config.LLM_RETRY_DELAY_MS
 });

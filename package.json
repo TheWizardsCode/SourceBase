@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@extractus/article-extractor": "^8.0.20",
+    "csv-parse": "^6.2.1",
     "discord.js": "^13.17.1",
     "dotenv": "^16.6.1",
     "html-to-text": "^6.0.0",

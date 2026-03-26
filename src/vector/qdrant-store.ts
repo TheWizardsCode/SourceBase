@@ -48,9 +48,9 @@ export class QdrantVectorStore {
   ): Promise<void> {
     if (!items.length) return;
     const points = items.map((item, i) => ({
-      id: item.id,
+      id: String(item.id),
       vector: item.vector,
-      payload: payload?.[i] ?? { id: item.id },
+      payload: payload?.[i] ?? { id: String(item.id) },
     }));
     await this.request("PUT", "/collections/" + this.collection + "/points", { points });
   }
@@ -61,7 +61,7 @@ export class QdrantVectorStore {
     payload: Record<string, unknown>
   ): Promise<void> {
     await this.request("PUT", "/collections/" + this.collection + "/points", {
-      points: [{ id, vector, payload }],
+      points: [{ id: String(id), vector, payload }],
     });
   }
 
@@ -92,7 +92,7 @@ export class QdrantVectorStore {
     );
 
     return result.result.map((point) => ({
-      id: point.payload.id ?? point.id,
+      id: typeof point.id === "string" ? parseInt(point.id, 10) : (point.payload.id ?? point.id),
       url: point.payload.url ?? "",
       canonicalUrl: null,
       title: point.payload.title ?? null,

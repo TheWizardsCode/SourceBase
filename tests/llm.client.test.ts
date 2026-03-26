@@ -27,7 +27,7 @@ describe("OpenAiCompatibleLlmClient", () => {
     expect(url).toContain("/embeddings");
     const body = JSON.parse(String(opts?.body));
     expect(body.model).toBe("embed");
-    expect(body.input).toBe("abc");
+    expect(body.input).toEqual(["abc"]);
   });
 
   it("retries on failures and eventually returns summary", async () => {

@@ -1,4 +1,5 @@
 import { extract } from "@extractus/article-extractor";
+import { htmlToText } from "html-to-text";
 import { PDFParse } from "pdf-parse";
 import { promises as fs } from "fs";
 import { extname } from "path";
@@ -23,11 +24,44 @@ export class ArticleExtractorContentExtractor implements ContentExtractor {
     }
 
     const image = article.image ?? null;
+    const rawHtml = article.content ?? null;
+
+    if (!rawHtml) {
+      return null;
+    }
+
+    const plainText = await htmlToText(rawHtml, {
+      selectors: [
+        { selector: "nav", format: "skip" },
+        { selector: "header", format: "skip" },
+        { selector: "footer", format: "skip" },
+        { selector: "aside", format: "skip" },
+        { selector: ".sidebar", format: "skip" },
+        { selector: ".advertisement", format: "skip" },
+        { selector: ".ad", format: "skip" },
+        { selector: ".related", format: "skip" },
+        { selector: ".comments", format: "skip" },
+        { selector: "img", format: "skip" },
+        {
+          selector: "a",
+          options: {
+            ignoreHref: true,
+            hideLinkHrefIfSameAsText: true
+          }
+        }
+      ]
+    });
+
+    const content = plainText.trim() || null;
+
+    if (!content) {
+      return null;
+    }
 
     return {
       url,
       title: article.title ?? null,
-      content: article.content ?? article.description ?? null,
+      content,
       imageUrl: image,
       metadata: {
         source: "article-extractor",

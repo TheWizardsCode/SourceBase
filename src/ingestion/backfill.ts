@@ -48,21 +48,38 @@ interface BackfillQueueRow {
   expires_at: Date | null;
 }
 
+export interface BackfillServiceOptions {
+  repository: LinkRepository;
+  logger: Logger;
+  embedder: {
+    embed(text: string): Promise<number[]>;
+  };
+  summarizer: {
+    summarize(content: string, sessionId?: string): Promise<string>;
+  };
+  youtubeClient?: YouTubeApiClient;
+}
+
 export class BackfillService {
+  private readonly repository: LinkRepository;
+  private readonly logger: Logger;
+  private readonly embedder: {
+    embed(text: string): Promise<number[]>;
+  };
+  private readonly summarizer: {
+    summarize(content: string, sessionId?: string): Promise<string>;
+  };
+  private readonly youtubeClient?: YouTubeApiClient;
   private isRunning = false;
   private lastMetrics: BackfillMetrics | null = null;
 
-  constructor(
-    private readonly repository: LinkRepository,
-    private readonly logger: Logger,
-    private readonly embedder: {
-      embed(text: string): Promise<number[]>;
-    },
-    private readonly summarizer: {
-      summarize(content: string, sessionId?: string): Promise<string>;
-    },
-    private readonly youtubeClient?: YouTubeApiClient
-  ) {}
+  constructor(options: BackfillServiceOptions) {
+    this.repository = options.repository;
+    this.logger = options.logger;
+    this.embedder = options.embedder;
+    this.summarizer = options.summarizer;
+    this.youtubeClient = options.youtubeClient;
+  }
 
   /**
    * Add an item to the backfill queue
@@ -106,8 +123,10 @@ export class BackfillService {
   }
 
   /**
-   * Process the backfill queue
-   * Should be called periodically (e.g., every hour)
+   * Process the backfill queue.
+   * If the queue is empty, automatically seed it from links that still need
+   * embeddings (links.embedding IS NULL) so the backfill bootstraps itself.
+   * Should be called periodically (e.g., every hour via startPeriodicProcessing).
    */
   async processQueue(batchSize: number = 10): Promise<void> {
     if (this.isRunning) {
@@ -124,8 +143,8 @@ export class BackfillService {
       // Fetch pending items ordered by priority and creation time
       const result = await this.repository["pool"].query(
         `
-        SELECT 
-          id, url, video_id, content_type, status, attempts, 
+        SELECT
+          id, url, video_id, content_type, status, attempts,
           error_message, priority, created_at, updated_at, expires_at
         FROM backfill_queue
         WHERE status = 'pending'
@@ -137,7 +156,62 @@ export class BackfillService {
         [batchSize]
       );
 
-      const items = result.rows as BackfillQueueRow[];
+      let items = result.rows as BackfillQueueRow[];
+
+      // If queue is empty, seed it from links that still need embeddings
+      if (items.length === 0) {
+        this.logger.debug("Backfill queue is empty — seeding from links without embeddings");
+        const seedResult = await this.repository["pool"].query(
+          `
+          INSERT INTO backfill_queue (url, video_id, content_type, status, attempts, priority, created_at, updated_at, expires_at)
+          SELECT DISTINCT ON (l.url)
+            l.url,
+            NULL,
+            'embedding',
+            'pending',
+            0,
+            100,
+            NOW(),
+            NOW(),
+            NOW() + INTERVAL '24 hours'
+          FROM links l
+          WHERE l.embedding IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM backfill_queue bq
+            WHERE bq.url = l.url AND bq.content_type = 'embedding' AND bq.status IN ('pending', 'processing')
+          )
+          ORDER BY l.url
+          LIMIT $1
+          RETURNING url
+          `,
+          [batchSize]
+        );
+        const seeded = seedResult.rowCount ?? 0;
+        if (seeded > 0) {
+          this.logger.info(`Seeded ${seeded} links into backfill queue`, { count: seeded });
+        } else {
+          this.logger.debug("No links without embeddings found to seed");
+          this.isRunning = false;
+          return;
+        }
+
+        // Re-fetch after seeding
+        const reResult = await this.repository["pool"].query(
+          `
+          SELECT
+            id, url, video_id, content_type, status, attempts,
+            error_message, priority, created_at, updated_at, expires_at
+          FROM backfill_queue
+          WHERE status = 'pending'
+            AND (expires_at IS NULL OR expires_at > NOW())
+          ORDER BY priority ASC, created_at ASC
+          LIMIT $1
+          FOR UPDATE SKIP LOCKED
+          `,
+          [batchSize]
+        );
+        items = reResult.rows as BackfillQueueRow[];
+      }
 
       if (items.length === 0) {
         this.logger.debug("No pending items in backfill queue");

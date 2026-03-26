@@ -6,6 +6,7 @@ import { DocumentQueueRepository } from "./db/queue-repository.js";
 import { DiscordBot } from "./discord/client.js";
 import { ArticleExtractorContentExtractor, PdfContentExtractor, FileContentExtractor } from "./ingestion/extractor.js";
 import { IngestionService } from "./ingestion/service.js";
+import { BackfillService } from "./ingestion/backfill.js";
 import type { ProgressUpdate, IngestionProgress, ProgressPhase } from "./ingestion/service.js";
 import { DocumentQueue, type QueueUpdateStatus } from "./ingestion/queue.js";
 import { CrawlService } from "./ingestion/crawl.js";
@@ -120,6 +121,14 @@ let pendingItemsFromRestart: Array<{ url: string; discordMessageId: string; disc
 
 // Cache of real Discord channels for synthetic messages loaded from database
 const channelCache = new Map<string, TextChannel>();
+
+const backfillService = new BackfillService({
+  repository,
+  logger,
+  embedder: embeddingProvider,
+  summarizer: llmClient,
+  youtubeClient,
+});
 
 const ingestionService = new IngestionService({
   repository,
@@ -634,6 +643,9 @@ async function startBot() {
 
     // Send startup notifications to channels (if any)
     await sendStartupNotifications();
+
+    // Start periodic backfill queue processing (re-embed/update existing links)
+    backfillService.startPeriodicProcessing(config.BACKFILL_INTERVAL_MS);
   } catch (error) {
     logger.error("Bot startup failed", {
       error: error instanceof Error ? error.message : String(error)

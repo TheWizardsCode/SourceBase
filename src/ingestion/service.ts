@@ -364,29 +364,8 @@ export class IngestionService {
                 // Continue; we may still have some vectors to average
               }
             }
-            // Capture the full averaged embedding prior to any DB resizing
             fullEmbedding = this.averageVectors(vectors);
             embedding = fullEmbedding ? fullEmbedding.slice() : null;
-            // Ensure embedding matches DB dimension (migration expects 1536).
-            // If the model returns a different dimension, resize conservatively
-            // by truncating or padding with zeros. This avoids DB insertion
-            // errors while preserving most of the vector information.
-            const TARGET_EMBED_DIM = 2000;
-            if (embedding) {
-              if (embedding.length !== TARGET_EMBED_DIM) {
-                this.options.logger.warn("Embedding dimension mismatch, resizing to DB target", {
-                  url,
-                  expected: TARGET_EMBED_DIM,
-                  actual: embedding.length
-                });
-                if (embedding.length > TARGET_EMBED_DIM) {
-                  embedding = embedding.slice(0, TARGET_EMBED_DIM);
-                } else {
-                  const padding = new Array(TARGET_EMBED_DIM - embedding.length).fill(0);
-                  embedding = embedding.concat(padding);
-                }
-              }
-            }
             if (embedding) this.options.logger.debug("Embedding averaged", { url, embeddingDim: embedding.length });
           }
 
@@ -549,24 +528,6 @@ export class IngestionService {
         ? [metadata.title, transcript].filter(Boolean).join("\n\n").trim()
         : [metadata.title, summary, metadata.description].filter(Boolean).join("\n\n").trim();
       let embedding = embeddingText ? await this.options.embedder.embed(embeddingText) : null;
-      
-      // Resize embedding to match DB dimension
-      const TARGET_EMBED_DIM = 2000;
-      if (embedding) {
-        if (embedding.length !== TARGET_EMBED_DIM) {
-          this.options.logger.warn("Embedding dimension mismatch, resizing to DB target", {
-            url,
-            expected: TARGET_EMBED_DIM,
-            actual: embedding.length
-          });
-          if (embedding.length > TARGET_EMBED_DIM) {
-            embedding = embedding.slice(0, TARGET_EMBED_DIM);
-          } else {
-            const padding = new Array(TARGET_EMBED_DIM - embedding.length).fill(0);
-            embedding = embedding.concat(padding);
-          }
-        }
-      }
 
       // Report storing phase
       progress.phase = "storing";
@@ -710,22 +671,6 @@ export class IngestionService {
           const vec = await this.options.embedder.embed(embeddingText);
           fullEmbedding = vec;
           embedding = vec.slice();
-          
-          // Resize embedding to match DB dimension
-          const TARGET_EMBED_DIM = 2000;
-          if (embedding.length !== TARGET_EMBED_DIM) {
-            this.options.logger.warn("Embedding dimension mismatch, resizing to DB target", {
-              url,
-              expected: TARGET_EMBED_DIM,
-              actual: embedding.length
-            });
-            if (embedding.length > TARGET_EMBED_DIM) {
-              embedding = embedding.slice(0, TARGET_EMBED_DIM);
-            } else {
-              const padding = new Array(TARGET_EMBED_DIM - embedding.length).fill(0);
-              embedding = embedding.concat(padding);
-            }
-          }
         } catch (embErr) {
           this.options.logger.warn('Failed to embed PDF content', {
             url,
@@ -897,22 +842,6 @@ export class IngestionService {
           const vec = await this.options.embedder.embed(embeddingText);
           fullEmbedding = vec;
           embedding = vec.slice();
-          
-          // Resize embedding to match DB dimension
-          const TARGET_EMBED_DIM = 2000;
-          if (embedding.length !== TARGET_EMBED_DIM) {
-            this.options.logger.warn("Embedding dimension mismatch, resizing to DB target", {
-              url,
-              expected: TARGET_EMBED_DIM,
-              actual: embedding.length
-            });
-            if (embedding.length > TARGET_EMBED_DIM) {
-              embedding = embedding.slice(0, TARGET_EMBED_DIM);
-            } else {
-              const padding = new Array(TARGET_EMBED_DIM - embedding.length).fill(0);
-              embedding = embedding.concat(padding);
-            }
-          }
         } catch (embErr) {
           this.options.logger.warn('Failed to embed file content', {
             url,

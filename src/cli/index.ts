@@ -29,7 +29,7 @@ const commands: Command[] = [
   {
     name: "stats",
     description: "Display database statistics",
-    usage: "sb stats",
+    usage: "sb stats [--format table|json] [--raw]",
   },
 ];
 
@@ -59,7 +59,9 @@ Examples:
   sb search --limit 10 "neural networks"
   sb search --format json "artificial intelligence"
   sb search --format urls-only "web development" | xargs -I {} curl {}
-  sb stats`);
+  sb stats
+  sb stats --format json
+  sb stats --raw`);
 }
 
 function showVersion(): void {
@@ -188,8 +190,9 @@ async function main(): Promise<number> {
       const { exitCode: searchExitCode } = await searchCommand(commandArgs);
       return searchExitCode;
     case "stats":
-      console.error("Error: 'stats' command not yet implemented");
-      return 1;
+      const { statsCommand } = await import("./commands/stats.js");
+      const { exitCode: statsExitCode } = await statsCommand(commandArgs);
+      return statsExitCode;
     default:
       showUnknownCommandError(command);
       return 2;

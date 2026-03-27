@@ -82,14 +82,14 @@ async function validateConfig(): Promise<boolean> {
     return true;
   } catch (error) {
     if (error instanceof Error) {
-      // Check if the error is about DATABASE_URL
-      if (error.message.includes("DATABASE_URL")) {
-        console.error("Error: DATABASE_URL environment variable is required");
-      } else {
-        console.error(`Error: ${error.message}`);
-      }
+      // Display the error message - it may be multi-line with detailed instructions
+      console.error("Error: Configuration validation failed\n");
+      console.error(error.message);
+      console.error("\nRun 'sb --help' for more information.");
     } else {
       console.error("Error: Configuration validation failed");
+      console.error("Please ensure all required environment variables are set.");
+      console.error("Run 'sb --help' for more information.");
     }
     return false;
   }

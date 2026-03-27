@@ -38,6 +38,10 @@ export interface StoredLink {
   updatedAt: string;
 }
 
+export interface SearchResult extends StoredLink {
+  similarity: number;
+}
+
 export interface Queryable {
   query: (sql: string, params?: unknown[]) => Promise<{ rowCount: number | null; rows: unknown[] }>;
 }
@@ -191,6 +195,40 @@ export class LinkRepository {
     );
 
     return result.rows.map((row) => mapStoredLink(row as StoredLinkRow));
+  }
+
+  async searchSimilarLinksWithScores(embedding: number[], limit = 3): Promise<SearchResult[]> {
+    const result = await this.pool.query(
+      `
+      SELECT
+        id,
+        url,
+        canonical_url,
+        title,
+        summary,
+        content,
+        image_url,
+        metadata,
+        first_seen_at,
+        last_seen_at,
+        created_at,
+        updated_at,
+        embedding <=> $1::vector as distance
+      FROM links
+      WHERE embedding IS NOT NULL
+      ORDER BY embedding <=> $1::vector
+      LIMIT $2
+      `,
+      [toVectorLiteral(embedding), limit]
+    );
+
+    return result.rows.map((row) => {
+      const typedRow = row as StoredLinkRow & { distance: string };
+      return {
+        ...mapStoredLink(typedRow),
+        similarity: 1 - parseFloat(typedRow.distance) // Convert distance to similarity (0-1)
+      };
+    });
   }
 
   async getStats(): Promise<DatabaseStats> {

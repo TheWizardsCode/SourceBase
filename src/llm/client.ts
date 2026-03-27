@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { config } from "../config.js";
+import { cliConfig as config } from "../config/cli.js";
 
 export interface OpenAiChatMessage {
   role: "system" | "user" | "assistant";

@@ -1,4 +1,4 @@
-import { config } from "../config.js";
+import { cliConfig as config } from "../config/cli.js";
 import type { Logger } from "../logger.js";
 
 export interface YouTubeVideoMetadata {

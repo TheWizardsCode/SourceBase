@@ -76,7 +76,7 @@ function showUnknownCommandError(command: string): void {
 async function validateConfig(): Promise<boolean> {
   try {
     // Dynamically import config to catch validation errors
-    const { config } = await import("../config.js");
+    const { cliConfig: config } = await import("../config/cli.js");
     // Access DATABASE_URL to ensure it's loaded
     const _ = config.DATABASE_URL;
     return true;

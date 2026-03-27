@@ -1,4 +1,4 @@
-import { config } from "../../config.js";
+import { botConfig as config } from "../../config/bot.js";
 import { getDbPool } from "../../db/client.js";
 import { DocumentQueueRepository } from "../../db/queue-repository.js";
 

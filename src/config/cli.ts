@@ -3,9 +3,7 @@ import { z } from "zod";
 
 dotenv.config();
 
-const configSchema = z.object({
-  DISCORD_BOT_TOKEN: z.string().min(1, "DISCORD_BOT_TOKEN is required"),
-  DISCORD_CHANNEL_ID: z.string().min(1, "DISCORD_CHANNEL_ID is required"),
+export const cliConfigSchema = z.object({
   LLM_BASE_URL: z.string().url().default("http://localhost:11434/v1"),
   LLM_MODEL: z.string().min(1).default("gpt-4o-mini"),
   // Optional: separate model name to use for embeddings (e.g. "embed")
@@ -34,16 +32,9 @@ const configSchema = z.object({
   YOUTUBE_API_KEY: z.string().optional(),
   YOUTUBE_CAPTION_LANGUAGE: z.string().default("en"),
   ENABLE_YOUTUBE_CAPTIONS: z.enum(["true", "false"]).default("true").transform(v => v === "true"),
-  // File URL configuration
-  ALLOWED_FILE_URL_USERS: z.string().optional().transform(v => v ? v.split(',').map(id => id.trim()) : []),
-  // Backfill configuration
-  BACKFILL_INTERVAL_MS: z.coerce.number().int().min(60000).default(3600000), // 1 hour default
-  MAX_BACKFILL_ATTEMPTS: z.coerce.number().int().min(1).default(3),
-  // Startup recovery configuration
-  STARTUP_RECOVERY_MAX_MESSAGES: z.coerce.number().int().min(0).default(1000), // 0 to disable
 });
 
-const parsed = configSchema.safeParse(process.env);
+const parsed = cliConfigSchema.safeParse(process.env);
 
 if (!parsed.success) {
   // Extract field names from validation errors for better messaging
@@ -61,8 +52,6 @@ if (!parsed.success) {
 function formatConfigError(missingFields: string[]): string {
   const requiredVars = [
     { name: "DATABASE_URL", example: "postgresql://user:pass@localhost:5432/dbname", description: "PostgreSQL connection string" },
-    { name: "DISCORD_BOT_TOKEN", example: "your-bot-token-here", description: "Discord bot authentication token" },
-    { name: "DISCORD_CHANNEL_ID", example: "123456789012345678", description: "Discord channel ID for the bot" },
     { name: "LLM_BASE_URL", example: "http://localhost:8080/v1", description: "LLM API base URL" },
     { name: "LLM_MODEL", example: "gpt-4o-mini", description: "LLM model name" }
   ];
@@ -113,4 +102,4 @@ function formatConfigError(missingFields: string[]): string {
   return message;
 }
 
-export const config = parsed.data;
+export const cliConfig = parsed.data;

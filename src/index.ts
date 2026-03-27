@@ -1,6 +1,6 @@
 import { Client, Intents, TextChannel, type Message } from "discord.js";
 import { getQdrantVectorStore, type QdrantVectorStore } from "./vector/qdrant-store.js";
-import { config } from "./config.js";
+import { botConfig as config } from "./config/bot.js";
 import { getDbPool, closeDbPool } from "./db/client.js";
 import { LinkRepository } from "./db/repository.js";
 import { DocumentQueueRepository } from "./db/queue-repository.js";

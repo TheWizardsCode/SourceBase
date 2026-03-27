@@ -10,8 +10,6 @@ const cliPath = join(__dirname, "..", "..", "src", "cli", "index.ts");
 const runCli = (args: string[], env?: Record<string, string>): { stdout: string; stderr: string; exitCode: number } => {
   const baseEnv = {
     DATABASE_URL: "test",
-    DISCORD_BOT_TOKEN: "test-token",
-    DISCORD_CHANNEL_ID: "test-channel",
     ...env
   };
   const envVars = Object.entries(baseEnv).map(([k, v]) => `${k}=${v}`).join(" ");

@@ -1,4 +1,4 @@
-import { config } from "../config.js";
+import { cliConfig as config } from "../config/cli.js";
 import type { StoredLink } from "../db/repository.js";
 
 const QDRANT_URL = config.QDRANT_URL;

@@ -1,4 +1,4 @@
-import { config } from "../config.js";
+import { botConfig as config } from "../config/bot.js";
 import type { LinkRecord, LinkRepository } from "../db/repository.js";
 import type { Logger } from "../logger.js";
 import type { YouTubeApiClient } from "./youtube.js";

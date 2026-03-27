@@ -1,4 +1,4 @@
-import { config } from "../../config.js";
+import { cliConfig as config } from "../../config/cli.js";
 import { getDbPool } from "../../db/client.js";
 import { LinkRepository } from "../../db/repository.js";
 import { ArticleExtractorContentExtractor, FileContentExtractor } from "../../ingestion/extractor.js";

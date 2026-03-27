@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 
-import { config } from "../config.js";
+import { cliConfig as config } from "../config/cli.js";
 
 let pool: Pool | undefined;
 

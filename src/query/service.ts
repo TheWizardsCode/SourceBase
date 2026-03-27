@@ -1,5 +1,5 @@
 import type { StoredLink } from "../db/repository.js";
-import { config } from "../config.js";
+import { cliConfig as config } from "../config/cli.js";
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;

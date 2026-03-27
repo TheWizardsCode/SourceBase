@@ -5,7 +5,7 @@ import type { Logger } from "../logger.js";
 import { extractUrls, isYouTubeUrl, extractYouTubeVideoId, isPdfUrl, isFileUrl } from "./url.js";
 import type { ContentExtractor } from "./extractor.js";
 import type { YouTubeApiClient } from "./youtube.js";
-import { config } from "../config.js";
+import { botConfig as config } from "../config/bot.js";
 
 export interface LinkStore {
   upsertLink(link: LinkRecord): Promise<unknown>;

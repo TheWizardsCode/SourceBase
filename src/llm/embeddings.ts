@@ -1,5 +1,5 @@
 import type { OpenAiCompatibleLlmClient } from "./client.js";
-import { config } from "../config.js";
+import { cliConfig as config } from "../config/cli.js";
 
 const MAX_EMBED_CHARS = config.LLM_EMBEDDING_MAX_CHARS;
 

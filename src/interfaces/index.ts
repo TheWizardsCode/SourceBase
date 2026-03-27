@@ -71,15 +71,10 @@
  */
 
 // ============================================================================
-// Core Types
+// CLI-Compatible Types (Discord-free)
 // ============================================================================
 
 export type {
-  // Discord message types
-  MessageUrl,
-  SyntheticMessage,
-  CommandContext,
-  
   // Progress event types
   ProgressPhase,
   ProgressUpdate,
@@ -88,7 +83,7 @@ export type {
   
   // Queue event types
   QueueUpdateStatus,
-  QueueItem,
+  CliQueueItem,
   PendingQueueItem,
   QueueUpdateCallback,
   
@@ -108,6 +103,20 @@ export type {
   AsyncInitializable,
   Disposable,
   Logger,
+  SyntheticMessage,
+} from "./cli-types.js";
+
+// ============================================================================
+// Discord-Specific Types
+// ============================================================================
+
+export type {
+  // Discord message types
+  MessageUrl,
+  CommandContext,
+  
+  // Queue event types (Discord-specific)
+  QueueItem,
 } from "./types.js";
 
 // ============================================================================
@@ -127,7 +136,24 @@ export {
 } from "./command-handler.js";
 
 // ============================================================================
-// Progress Presenter
+// CLI Progress Presenter (Discord-free base)
+// ============================================================================
+
+export type {
+  CliProgressPresenterOptions,
+  CliPresenterResult,
+  CliProgressPresenter,
+  CliProgressPresenterFactory,
+} from "./cli-progress-presenter.js";
+
+export {
+  PHASE_EMOJI,
+  PHASE_LABEL,
+  CliProgressPresenterBase,
+} from "./cli-progress-presenter.js";
+
+// ============================================================================
+// Discord Progress Presenter (extends CLI base)
 // ============================================================================
 
 export type {
@@ -138,8 +164,6 @@ export type {
 } from "./progress-presenter.js";
 
 export {
-  PHASE_EMOJI,
-  PHASE_LABEL,
   ProgressPresenterBase,
 } from "./progress-presenter.js";
 

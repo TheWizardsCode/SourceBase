@@ -64,7 +64,7 @@
  */
 
 import type { Message, TextChannel } from "discord.js";
-import type { QueueUpdateStatus, QueueItem, Logger } from "./types.js";
+import type { QueueUpdateStatus, CliQueueItem, Logger } from "./cli-types.js";
 
 /**
  * Configuration options for queue presenters
@@ -95,8 +95,8 @@ export interface QueuePresenterOptions {
  * class DocumentQueue {
  *   constructor(private readonly presenter: QueuePresenter) {}
  *   
- *   async onQueueUpdate(item: QueueItem, queueSize: number, status: QueueUpdateStatus): Promise<void> {
- *     const channelId = item.message.channelId;
+   *   async onQueueUpdate(item: CliQueueItem, queueSize: number, status: QueueUpdateStatus): Promise<void> {
+   *     const channelId = item.channelId;
  *     const content = this.presenter.format(item.url, queueSize, status);
  *     
  *     // Don't show queue status if queue is empty

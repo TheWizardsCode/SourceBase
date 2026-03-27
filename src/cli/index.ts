@@ -24,7 +24,7 @@ const commands: Command[] = [
   {
     name: "search",
     description: "Perform semantic search on indexed content",
-    usage: "sb search <query>",
+    usage: "sb search [--limit N] [--format table|json|urls-only] <query>",
   },
   {
     name: "stats",
@@ -56,6 +56,9 @@ Examples:
   sb add --verbose https://example.com/article
   sb queue https://example.com/article
   sb search "machine learning"
+  sb search --limit 10 "neural networks"
+  sb search --format json "artificial intelligence"
+  sb search --format urls-only "web development" | xargs -I {} curl {}
   sb stats`);
 }
 
@@ -172,6 +175,18 @@ async function main(): Promise<number> {
       const { queueCommand } = await import("./commands/queue.js");
       const { exitCode: queueExitCode } = await queueCommand(commandArgs, { verbose });
       return queueExitCode;
+    case "search":
+      if (commandArgs.length === 0) {
+        console.error("Error: 'search' command requires a query argument");
+        console.error("Usage: sb search [options] <query>");
+        console.error("\nOptions:");
+        console.error("  --limit, -l N     Number of results (1-20, default: 5)");
+        console.error("  --format, -f      Output format: table, json, urls-only (default: table)");
+        return 2;
+      }
+      const { searchCommand } = await import("./commands/search.js");
+      const { exitCode: searchExitCode } = await searchCommand(commandArgs);
+      return searchExitCode;
     case "stats":
       console.error("Error: 'stats' command not yet implemented");
       return 1;

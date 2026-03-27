@@ -15,9 +15,15 @@ const TEST_URLS = {
 };
 
 const runCli = (args: string[], env?: Record<string, string>): { stdout: string; stderr: string; exitCode: number } => {
-  const envVars = env ? Object.entries(env).map(([k, v]) => `${k}=${v}`).join(" ") : "";
+  const baseEnv = {
+    DATABASE_URL: "test",
+    DISCORD_BOT_TOKEN: "test-token",
+    DISCORD_CHANNEL_ID: "test-channel",
+    ...env
+  };
+  const envVars = Object.entries(baseEnv).map(([k, v]) => `${k}=${v}`).join(" ");
   try {
-    const stdout = execSync(`DATABASE_URL=test ${envVars} npx tsx ${cliPath} ${args.join(" ")}`, {
+    const stdout = execSync(`${envVars} npx tsx ${cliPath} ${args.join(" ")}`, {
       encoding: "utf-8",
       cwd: join(__dirname, "..", ".."),
     });

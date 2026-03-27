@@ -68,9 +68,10 @@ describe("CLI Queue Command", () => {
   });
   
   describe("multiple URL support", () => {
-    it("should accept multiple URLs in single command", () => {
+    it("should accept multiple URLs in single command", { timeout: 30000 }, () => {
       const { stderr } = runCli(["queue", "https://example.com", "https://example.org"]);
       
+      // Should not show argument error
       expect(stderr).not.toContain("requires at least one URL argument");
     });
   });

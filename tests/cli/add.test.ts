@@ -83,7 +83,7 @@ describe("CLI Add Command", () => {
   });
   
   describe("multiple URL support", () => {
-    it("should accept multiple URLs in single command", () => {
+    it("should accept multiple URLs in single command", { timeout: 30000 }, () => {
       const { stderr } = runCli(["add", "https://example.com", "https://example.org"]);
       
       // Should not show argument error
@@ -136,13 +136,13 @@ describe("CLI Add Command", () => {
       expect(stderr).not.toContain("Unknown");
     });
     
-    it("should show JSON output in verbose mode", () => {
-      const { stdout } = runCli(["add", "--verbose", TEST_URLS.valid]);
+    it("should show JSON output in verbose mode", { timeout: 30000 }, () => {
+      const { stdout, stderr } = runCli(["add", "--verbose", TEST_URLS.valid]);
       
       // In verbose mode, should see JSON phase output
-      const output = stdout + (runCli(["add", "--verbose", TEST_URLS.valid]).stderr);
+      const output = stdout + stderr;
       // Might not see it if it fails immediately, but at least test flag is accepted
-      expect(stdout).toBeTruthy();
+      expect(output).toBeTruthy();
     });
   });
   

@@ -107,7 +107,8 @@ describe("CLI Entry Point", () => {
         expect(true).toBe(false);
       } catch (error: any) {
         const stderr = error.stderr || "";
-        expect(stderr).toContain("DATABASE_URL environment variable is required");
+        expect(stderr).toContain("Configuration validation failed");
+        expect(stderr).toContain("DATABASE_URL");
         expect(error.status).toBe(1);
       }
     });

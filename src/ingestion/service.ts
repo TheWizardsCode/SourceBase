@@ -1,11 +1,10 @@
-import type { Message } from "discord.js";
-
 import type { LinkRecord } from "../db/repository.js";
 import type { Logger } from "../logger.js";
 import { extractUrls, isYouTubeUrl, extractYouTubeVideoId, isPdfUrl, isFileUrl } from "./url.js";
 import type { ContentExtractor } from "./extractor.js";
 import type { YouTubeApiClient } from "./youtube.js";
-import { botConfig as config } from "../config/bot.js";
+import { cliConfig as config } from "../config/cli.js";
+import type { SyntheticMessage } from "../interfaces/cli-types.js";
 
 export interface LinkStore {
   upsertLink(link: LinkRecord): Promise<unknown>;
@@ -147,7 +146,7 @@ export class IngestionService {
     }
 
     async ingestMessage(
-      message: Message,
+      message: SyntheticMessage,
       progressContext?: { urls: string[]; currentIndex: number; queueSize?: number }
     ): Promise<void> {
       const urls = extractUrls(message.content);
@@ -170,10 +169,12 @@ export class IngestionService {
         queueSize: progressContext?.queueSize ?? 0
       };
 
-      // Add an "eyes" reaction to indicate the bot is processing this message
-      await message.react("👀");
+      // Add an "eyes" reaction to indicate the bot is processing this message (Discord bot only)
+      if (message.react) {
+        await message.react("👀");
+      }
 
-      // Capture the bot's user ID for later reaction removal (used later)
+      // Capture the bot's user ID for later reaction removal (Discord bot only)
       const botUserId = message.client?.user?.id;
 
       for (let i = 0; i < allUrls.length; i++) {
@@ -231,13 +232,15 @@ export class IngestionService {
           // Check if this is a file:// URL
           if (isFileUrl(url)) {
             // Security check: only allow file URLs from CLI or whitelisted Discord users
-            const isCli = message.channelId === "cli" || (message as any).author?.id === "cli-user";
-            const isWhitelisted = config.ALLOWED_FILE_URL_USERS.includes((message as any).author?.id);
+            const isCli = message.channelId === "cli" || message.authorId === "cli-user";
+            // Only check whitelist if the config property exists (bot mode)
+            const allowedUsers = (config as any).ALLOWED_FILE_URL_USERS as string[] | undefined;
+            const isWhitelisted = allowedUsers ? allowedUsers.includes(message.authorId) : false;
             
             if (!isCli && !isWhitelisted) {
               this.options.logger.warn('Unauthorized file URL attempt', {
                 url,
-                userId: (message as any).author?.id,
+                userId: message.authorId,
                 messageId: message.id
               });
               throw new Error("You are not authorized to submit file URLs");
@@ -387,7 +390,7 @@ export class IngestionService {
               ...extracted.metadata,
               discordMessageId: message.id,
               discordChannelId: message.channelId,
-              discordAuthorId: message.author.id
+              discordAuthorId: message.authorId
             }
           });
 
@@ -415,7 +418,7 @@ export class IngestionService {
                     metadata: extracted.metadata,
                     discordMessageId: message.id,
                     discordChannelId: message.channelId,
-                    discordAuthorId: message.author.id
+                    discordAuthorId: message.authorId
                   }
                 }]);
               }
@@ -436,20 +439,22 @@ export class IngestionService {
             progress
           );
 
-          // Only remove eyes and add success reaction for non-crawl or last URL
+          // Only remove eyes and add success reaction for non-crawl or last URL (Discord bot only)
           if (!isCrawl || i === allUrls.length - 1) {
-            // Remove eyes reaction before adding final success reaction
-            if (botUserId) {
+            // Remove eyes reaction before adding final success reaction (Discord bot only)
+            if (botUserId && message.reactions) {
               const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
               if (eyesReaction) {
                 await eyesReaction.users.remove(botUserId);
               }
             }
-            // Use update reaction if this is an update, otherwise use success reaction
-            const reaction = isUpdate && this.options.updateReaction 
-              ? this.options.updateReaction 
-              : this.options.successReaction;
-            await message.react(reaction);
+            // Use update reaction if this is an update, otherwise use success reaction (Discord bot only)
+            if (message.react) {
+              const reaction = isUpdate && this.options.updateReaction 
+                ? this.options.updateReaction 
+                : this.options.successReaction;
+              await message.react(reaction);
+            }
           }
         } catch (error) {
           this.options.logger.warn('Failed to ingest URL', {
@@ -465,16 +470,18 @@ export class IngestionService {
             progress
           );
 
-          // Only remove eyes and add failure reaction for non-crawl or last URL
+          // Only remove eyes and add failure reaction for non-crawl or last URL (Discord bot only)
           if (!isCrawl || i === allUrls.length - 1) {
-            // Remove eyes reaction before adding failure reaction
-            if (botUserId) {
+            // Remove eyes reaction before adding failure reaction (Discord bot only)
+            if (botUserId && message.reactions) {
               const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
               if (eyesReaction) {
                 await eyesReaction.users.remove(botUserId);
               }
             }
-            await message.react(this.options.failureReaction);
+            if (message.react) {
+              await message.react(this.options.failureReaction);
+            }
           }
         }
       }
@@ -482,7 +489,7 @@ export class IngestionService {
 
     private async ingestYouTubeUrl(
       url: string,
-      message: Message,
+      message: SyntheticMessage,
       currentIndex: number,
       totalUrls: number,
       progress: IngestionProgress,
@@ -561,7 +568,7 @@ export class IngestionService {
         metadata: {
           discordMessageId: message.id,
           discordChannelId: message.channelId,
-          discordAuthorId: message.author.id,
+          discordAuthorId: message.authorId,
           contentType: "youtube",
           videoId: metadata.videoId,
           channelTitle: metadata.channelTitle,
@@ -579,26 +586,28 @@ export class IngestionService {
         messageId: message.id
       });
 
-      // Remove eyes reaction before adding success reaction
+      // Remove eyes reaction before adding success reaction (Discord bot only)
       const botUserId = message.client?.user?.id;
-      if (botUserId) {
+      if (botUserId && message.reactions) {
         const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
         if (eyesReaction) {
           await eyesReaction.users.remove(botUserId);
         }
       }
-      // Use update reaction if this is an update, otherwise use success reaction
-      const reaction = isUpdate && this.options.updateReaction 
-        ? this.options.updateReaction 
-        : this.options.successReaction;
-      await message.react(reaction);
+      // Use update reaction if this is an update, otherwise use success reaction (Discord bot only)
+      if (message.react) {
+        const reaction = isUpdate && this.options.updateReaction 
+          ? this.options.updateReaction 
+          : this.options.successReaction;
+        await message.react(reaction);
+      }
       
       return { summary, title: metadata.title };
     }
 
     private async ingestPdfUrl(
       url: string,
-      message: Message,
+      message: SyntheticMessage,
       currentIndex: number,
       totalUrls: number,
       progress: IngestionProgress,
@@ -712,7 +721,7 @@ export class IngestionService {
         metadata: {
           discordMessageId: message.id,
           discordChannelId: message.channelId,
-          discordAuthorId: message.author.id,
+          discordAuthorId: message.authorId,
           contentType: "pdf",
           pageCount: extracted.metadata.pageCount ?? null,
           pdfAuthor: extracted.metadata.author ?? null,
@@ -743,7 +752,7 @@ export class IngestionService {
                 metadata: extracted.metadata,
                 discordMessageId: message.id,
                 discordChannelId: message.channelId,
-                discordAuthorId: message.author.id
+                discordAuthorId: message.authorId
               }
             }]);
           }
@@ -759,27 +768,29 @@ export class IngestionService {
         messageId: message.id
       });
 
-      // Remove eyes reaction before adding success reaction
+      // Remove eyes reaction before adding success reaction (Discord bot only)
       const botUserId = message.client?.user?.id;
-      if (botUserId) {
+      if (botUserId && message.reactions) {
         const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
         if (eyesReaction) {
           await eyesReaction.users.remove(botUserId);
         }
       }
       
-      // Use update reaction if this is an update, otherwise use success reaction
-      const reaction = isUpdate && this.options.updateReaction 
-        ? this.options.updateReaction 
-        : this.options.successReaction;
-      await message.react(reaction);
+      // Use update reaction if this is an update, otherwise use success reaction (Discord bot only)
+      if (message.react) {
+        const reaction = isUpdate && this.options.updateReaction 
+          ? this.options.updateReaction 
+          : this.options.successReaction;
+        await message.react(reaction);
+      }
       
       return { summary, title: extracted.title };
     }
 
     private async ingestFileUrl(
       url: string,
-      message: Message,
+      message: SyntheticMessage,
       currentIndex: number,
       totalUrls: number,
       progress: IngestionProgress,
@@ -942,20 +953,22 @@ export class IngestionService {
         messageId: message.id
       });
 
-      // Remove eyes reaction before adding success reaction
+      // Remove eyes reaction before adding success reaction (Discord bot only)
       const botUserId = message.client?.user?.id;
-      if (botUserId) {
+      if (botUserId && message.reactions) {
         const eyesReaction = message.reactions.cache.get('👀') ?? (typeof message.reactions.resolve === 'function' ? message.reactions.resolve('👀') : undefined);
         if (eyesReaction) {
           await eyesReaction.users.remove(botUserId);
         }
       }
       
-      // Use update reaction if this is an update, otherwise use success reaction
-      const reaction = isUpdate && this.options.updateReaction 
-        ? this.options.updateReaction 
-        : this.options.successReaction;
-      await message.react(reaction);
+      // Use update reaction if this is an update, otherwise use success reaction (Discord bot only)
+      if (message.react) {
+        const reaction = isUpdate && this.options.updateReaction 
+          ? this.options.updateReaction 
+          : this.options.successReaction;
+        await message.react(reaction);
+      }
       
       return { summary, title: extracted.title };
     }

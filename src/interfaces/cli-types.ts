@@ -164,9 +164,9 @@ export interface CliQueueItem {
  * ```typescript
  * const pendingItem: PendingQueueItem = {
  *   url: "https://example.com",
- *   discordMessageId: "123456",
- *   discordChannelId: "789012",
- *   discordAuthorId: "345678",
+ *   sourceId: "123456",
+ *   sourceContext: "789012",
+ *   authorId: "345678",
  *   dbId: 42
  * };
  * ```
@@ -174,12 +174,12 @@ export interface CliQueueItem {
 export interface PendingQueueItem {
   /** URL to process */
   url: string;
-  /** Discord message ID */
-  discordMessageId: string;
-  /** Discord channel ID */
-  discordChannelId: string;
-  /** Discord author ID */
-  discordAuthorId: string;
+  /** Source ID (Discord message ID or CLI-generated ID) */
+  sourceId: string;
+  /** Source context (Discord channel ID or "cli") */
+  sourceContext: string;
+  /** Author ID (Discord user ID or CLI user) */
+  authorId: string;
   /** Database record ID */
   dbId: number;
 }
@@ -396,4 +396,19 @@ export interface SyntheticMessage {
   authorId: string;
   /** Message content (typically the URL) */
   content: string;
+  /** Optional: Discord client for bot reactions (bot only) */
+  client?: {
+    user?: {
+      id: string;
+    } | null;
+  };
+  /** Optional: Discord reactions for bot use */
+  reactions?: {
+    cache: {
+      get: (key: string) => { users: { remove: (userId: string) => Promise<void> } } | undefined;
+    };
+    resolve: (key: string) => { users: { remove: (userId: string) => Promise<void> } } | undefined;
+  };
+  /** Optional: React function for bot use */
+  react?: (emoji: string) => Promise<void>;
 }

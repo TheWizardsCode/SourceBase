@@ -2,14 +2,7 @@ import type { Message } from "discord.js";
 import type { Logger } from "../logger.js";
 import type { IngestionService } from "./service.js";
 import { DocumentQueueRepository } from "../db/queue-repository.js";
-
-export interface PendingQueueItem {
-  url: string;
-  discordMessageId: string;
-  discordChannelId: string;
-  discordAuthorId: string;
-  dbId: number;
-}
+import type { PendingQueueItem } from "../interfaces/cli-types.js";
 
 export interface QueueItem {
   message: Message;
@@ -59,10 +52,10 @@ export class DocumentQueue {
     for (const entry of pendingEntries) {
       // Create a minimal message-like object with necessary fields
       const syntheticMessage = {
-        id: entry.discordMessageId,
-        channelId: entry.discordChannelId,
+        id: entry.sourceId,
+        channelId: entry.sourceContext,
         channel: { type: 'GUILD_TEXT' },
-        author: { id: entry.discordAuthorId },
+        author: { id: entry.authorId },
         content: entry.url,
         client: { user: { id: '' } },
         react: async () => {},
@@ -78,9 +71,9 @@ export class DocumentQueue {
       // Track pending items for status restoration
       pendingItems.push({
         url: entry.url,
-        discordMessageId: entry.discordMessageId,
-        discordChannelId: entry.discordChannelId,
-        discordAuthorId: entry.discordAuthorId,
+        sourceId: entry.sourceId,
+        sourceContext: entry.sourceContext,
+        authorId: entry.authorId,
         dbId: entry.id,
       });
     }
@@ -136,10 +129,10 @@ export class DocumentQueue {
           const entry = await this.options.repository.getByUrl(url);
 
           const syntheticMessage = {
-            id: entry ? entry.discordMessageId : `db-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
-            channelId: entry ? entry.discordChannelId : "",
+            id: entry ? entry.sourceId : `db-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+            channelId: entry ? entry.sourceContext : "",
             channel: { type: 'GUILD_TEXT' },
-            author: { id: entry ? entry.discordAuthorId : 'external' },
+            author: { id: entry ? entry.authorId : 'external' },
             content: url,
             client: { user: { id: '' } },
             react: async () => {},
@@ -227,9 +220,9 @@ export class DocumentQueue {
     for (const item of newItems) {
       const entry = await this.options.repository.create({
         url: item.url,
-        discordMessageId: item.message.id,
-        discordChannelId: item.message.channelId,
-        discordAuthorId: item.message.author.id,
+        sourceId: item.message.id,
+        sourceContext: item.message.channelId,
+        authorId: item.message.author.id,
       });
       item.dbId = entry.id;
       this.queue.push(item);
@@ -339,7 +332,19 @@ export class DocumentQueue {
       }
 
       try {
-        await this.options.ingestionService.ingestMessage(item.message, {
+        // Convert Discord Message to SyntheticMessage for ingestion
+        // Note: We cast through unknown because Discord's Message type has more
+        // specific types than SyntheticMessage, but they're runtime-compatible
+        const syntheticMessage = {
+          id: item.message.id,
+          channelId: item.message.channelId,
+          authorId: item.message.author.id,
+          content: item.message.content,
+          client: item.message.client ? { user: item.message.client.user } : undefined,
+          reactions: item.message.reactions,
+          react: item.message.react?.bind(item.message)
+        } as unknown as import("../interfaces/cli-types.js").SyntheticMessage;
+        await this.options.ingestionService.ingestMessage(syntheticMessage, {
           urls: [item.url],
           currentIndex: 0,
           queueSize: remainingInQueue,

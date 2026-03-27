@@ -15,15 +15,15 @@ describe("DocumentQueue - restart recovery", () => {
     // Pre-populate database with pending items
     await repository.create({
       url: "https://example.com/1",
-      discordMessageId: "msg-1",
-      discordChannelId: "channel-1",
-      discordAuthorId: "author-1",
+      sourceId: "msg-1",
+      sourceContext: "channel-1",
+      authorId: "author-1",
     });
     await repository.create({
       url: "https://example.com/2",
-      discordMessageId: "msg-2",
-      discordChannelId: "channel-1",
-      discordAuthorId: "author-1",
+      sourceId: "msg-2",
+      sourceContext: "channel-1",
+      authorId: "author-1",
     });
 
     const queue = new DocumentQueue({
@@ -37,10 +37,10 @@ describe("DocumentQueue - restart recovery", () => {
 
     expect(pendingItems).toHaveLength(2);
     expect(pendingItems[0].url).toBe("https://example.com/1");
-    expect(pendingItems[0].discordMessageId).toBe("msg-1");
-    expect(pendingItems[0].discordChannelId).toBe("channel-1");
+    expect(pendingItems[0].sourceId).toBe("msg-1");
+    expect(pendingItems[0].sourceContext).toBe("channel-1");
     expect(pendingItems[1].url).toBe("https://example.com/2");
-    expect(pendingItems[1].discordMessageId).toBe("msg-2");
+    expect(pendingItems[1].sourceId).toBe("msg-2");
   });
 
   it("processes reloaded items after initialization", async () => {
@@ -52,9 +52,9 @@ describe("DocumentQueue - restart recovery", () => {
     // Pre-populate database with pending items
     await repository.create({
       url: "https://example.com/test",
-      discordMessageId: "msg-1",
-      discordChannelId: "channel-1",
-      discordAuthorId: "author-1",
+      sourceId: "msg-1",
+      sourceContext: "channel-1",
+      authorId: "author-1",
     });
 
     let processingStarted = false;

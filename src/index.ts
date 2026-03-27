@@ -127,7 +127,7 @@ const statusMessages = new Map<string, Message>();
 const queueStatusMessages = new Map<string, Message>();
 
 // Keep track of pending items loaded from database for status restoration
-let pendingItemsFromRestart: Array<{ url: string; discordMessageId: string; discordChannelId: string }> = [];
+let pendingItemsFromRestart: Array<{ url: string; sourceId: string; sourceContext: string }> = [];
 
 // Cache of real Discord channels for synthetic messages loaded from database
 const channelCache = new Map<string, TextChannel>();
@@ -677,9 +677,9 @@ async function restoreStatusMessages(): Promise<void> {
   // Group items by channel to send one queue status message per channel
   const itemsByChannel = new Map<string, typeof pendingItemsFromRestart>();
   for (const item of pendingItemsFromRestart) {
-    const existing = itemsByChannel.get(item.discordChannelId) || [];
+    const existing = itemsByChannel.get(item.sourceContext) || [];
     existing.push(item);
-    itemsByChannel.set(item.discordChannelId, existing);
+    itemsByChannel.set(item.sourceContext, existing);
   }
 
   // Fetch and cache real Discord channels, then send queue status messages

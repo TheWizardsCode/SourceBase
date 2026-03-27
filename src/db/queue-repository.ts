@@ -3,9 +3,9 @@ import type { Pool } from "pg";
 export interface QueueEntry {
   id: number;
   url: string;
-  discordMessageId: string;
-  discordChannelId: string;
-  discordAuthorId: string;
+  sourceId: string;
+  sourceContext: string;
+  authorId: string;
   status: "pending" | "processing" | "completed" | "failed";
   attempts: number;
   errorMessage?: string;
@@ -16,9 +16,9 @@ export interface QueueEntry {
 
 export interface CreateQueueEntry {
   url: string;
-  discordMessageId: string;
-  discordChannelId: string;
-  discordAuthorId: string;
+  sourceId: string;
+  sourceContext: string;
+  authorId: string;
 }
 
 export class DocumentQueueRepository {
@@ -26,10 +26,10 @@ export class DocumentQueueRepository {
 
   async create(entry: CreateQueueEntry): Promise<QueueEntry> {
     const result = await this.pool.query(
-      `INSERT INTO document_queue (url, discord_message_id, discord_channel_id, discord_author_id, status)
+      `INSERT INTO document_queue (url, source_id, source_context, author_id, status)
        VALUES ($1, $2, $3, $4, 'pending')
        RETURNING *`,
-      [entry.url, entry.discordMessageId, entry.discordChannelId, entry.discordAuthorId]
+      [entry.url, entry.sourceId, entry.sourceContext, entry.authorId]
     );
     return this.mapRow(result.rows[0]);
   }
@@ -113,9 +113,9 @@ export class DocumentQueueRepository {
     return {
       id: row.id,
       url: row.url,
-      discordMessageId: row.discord_message_id,
-      discordChannelId: row.discord_channel_id,
-      discordAuthorId: row.discord_author_id,
+      sourceId: row.source_id,
+      sourceContext: row.source_context,
+      authorId: row.author_id,
       status: row.status,
       attempts: row.attempts,
       errorMessage: row.error_message,

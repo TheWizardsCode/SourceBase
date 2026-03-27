@@ -61,19 +61,13 @@ async function processSingleUrl(
   options: AddOptions
 ): Promise<AddResult> {
   try {
-    // Use a mock message object for compatibility with IngestionService
-    const mockMessage = {
+    // Create a SyntheticMessage for CLI usage (no Discord dependencies)
+    const syntheticMessage = {
       id: `cli-${Date.now()}`,
       content: url,
       channelId: "cli",
-      author: { id: "cli-user" },
-      client: { user: { id: "cli-bot" } },
-      react: async () => {},
-      reactions: {
-        cache: { get: () => undefined },
-        resolve: () => undefined
-      }
-    } as any;
+      authorId: "cli-user",
+    };
 
     // Track the result
     let resultTitle: string | undefined;
@@ -153,7 +147,7 @@ async function processSingleUrl(
       onProgress: progressCallback
     });
 
-    await customService.ingestMessage(mockMessage);
+    await customService.ingestMessage(syntheticMessage);
 
     if (completed) {
       // Get the stored link to retrieve the ID

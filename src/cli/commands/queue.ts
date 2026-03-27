@@ -1,9 +1,12 @@
-import { botConfig as config } from "../../config/bot.js";
+import { cliConfig as config } from "../../config/cli.js";
 import { getDbPool } from "../../db/client.js";
 import { DocumentQueueRepository } from "../../db/queue-repository.js";
 
 interface QueueOptions {
   verbose?: boolean;
+  sourceId?: string;
+  sourceContext?: string;
+  authorId?: string;
 }
 
 interface QueueResult {
@@ -22,17 +25,17 @@ function validateUrl(url: string): boolean {
   }
 }
 
-async function queueSingleUrl(url: string): Promise<QueueResult> {
+async function queueSingleUrl(url: string, options: QueueOptions): Promise<QueueResult> {
   try {
     const pool = getDbPool();
     const repository = new DocumentQueueRepository(pool);
     
-    // Create a queue entry with real Discord channel ID for notifications
+    // Create a queue entry with source context (CLI or Discord)
     const entry = await repository.create({
       url,
-      discordMessageId: `cli-${Date.now()}`,
-      discordChannelId: config.DISCORD_CHANNEL_ID,
-      discordAuthorId: "cli-user"
+      sourceId: options.sourceId || `cli-${Date.now()}`,
+      sourceContext: options.sourceContext || "cli",
+      authorId: options.authorId || "cli-user"
     });
     
     return {
@@ -86,7 +89,7 @@ export async function queueCommand(urls: string[], options: QueueOptions = {}): 
       console.log(`Queueing: ${url}`);
     }
     
-    const result = await queueSingleUrl(url);
+    const result = await queueSingleUrl(url, options);
     results.push(result);
     
     if (result.success) {

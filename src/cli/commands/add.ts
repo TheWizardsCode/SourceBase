@@ -7,9 +7,17 @@ import { YouTubeApiClient } from "../../ingestion/youtube.js";
 import { OpenAiCompatibleLlmClient } from "../../llm/client.js";
 import { Logger } from "../../logger.js";
 import { getQdrantVectorStore } from "../../vector/qdrant-store.js";
+import {
+  createProgressPresenter,
+  toCliProgressEvent,
+  type CliProgressPresenter,
+  type PresenterFormat,
+} from "../presenters/index.js";
 
 interface AddOptions {
   verbose?: boolean;
+  format?: PresenterFormat;
+  webhookUrl?: string;
 }
 
 interface AddResult {
@@ -41,21 +49,6 @@ function validateUrl(url: string): boolean {
   }
 }
 
-function formatPhase(phase: string): string {
-  const phaseLabels: Record<string, string> = {
-    downloading: "Downloading",
-    extracting_links: "Extracting",
-    updating: "Updating",
-    summarizing: "Summarizing",
-    embedding: "Embedding",
-    storing: "Storing",
-    completed: "Completed",
-    failed: "Failed"
-  };
-  
-  return phaseLabels[phase] || phase;
-}
-
 async function processSingleUrl(
   url: string,
   options: AddOptions
@@ -76,29 +69,17 @@ async function processSingleUrl(
     let failed = false;
     let errorMsg: string | undefined;
 
-    // Create progress callback that captures the result and shows phases
+    // Create progress presenter based on options
+    const presenter: CliProgressPresenter = createProgressPresenter({
+      format: options.format,
+      webhookUrl: options.webhookUrl,
+    });
+
+    // Create progress callback that captures the result and delegates to presenter
     const progressCallback: ProgressCallback = async (update, overall) => {
-      // Show progress phase on console (always, not just in verbose mode)
-      if (process.stdout.isTTY && update.phase !== "completed" && update.phase !== "failed") {
-        process.stdout.write(`\r${formatPhase(update.phase)}...`);
-      } else if (update.phase === "completed" || update.phase === "failed") {
-        if (process.stdout.isTTY) {
-          process.stdout.write(`\r${formatPhase(update.phase)}      \n`);
-        } else {
-          console.log(formatPhase(update.phase));
-        }
-      }
-      
-      // In verbose mode, also show JSON details
-      if (options.verbose) {
-        console.log(JSON.stringify({
-          phase: update.phase,
-          url: update.url,
-          current: update.current,
-          total: update.total,
-          message: update.message
-        }));
-      }
+      // Convert to CLI progress event and send to presenter
+      const event = toCliProgressEvent(update, overall);
+      await presenter.onProgress(event);
       
       // Capture result data
       if (update.phase === "completed") {

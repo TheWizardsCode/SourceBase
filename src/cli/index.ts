@@ -14,7 +14,7 @@ const commands: Command[] = [
   {
     name: "add",
     description: "Add a URL to the database",
-    usage: "sb add [--verbose] <url> [<url2> ...]",
+    usage: "sb add [--verbose] [--format console|ndjson|webhook] [--webhook-url <url>] <url> [<url2> ...]",
   },
   {
     name: "queue",
@@ -51,9 +51,19 @@ Options:
   --version   Show version information
   --verbose   Enable verbose output (JSON logging)
 
+Progress Output Formats (add command):
+  --format, -f <format>  Progress output format (default: auto)
+                         - console: Human-friendly TTY output
+                         - ndjson:  One JSON line per event
+                         - webhook: POST events to webhook URL
+                         - auto:    console in TTY, ndjson otherwise
+  --webhook-url <url>    Webhook URL (required when format=webhook)
+
 Examples:
   sb add https://example.com/article
   sb add --verbose https://example.com/article
+  sb add --format ndjson https://example.com/article | jq .
+  sb add --format webhook --webhook-url https://example.com/hook https://example.com/article
   sb queue https://example.com/article
   sb search "machine learning"
   sb search --limit 10 "neural networks"
@@ -95,26 +105,46 @@ async function validateConfig(): Promise<boolean> {
   }
 }
 
-function parseArgs(args: string[]): { command: string | null; commandArgs: string[]; verbose: boolean } {
+interface ParsedArgs {
+  command: string | null;
+  commandArgs: string[];
+  verbose: boolean;
+  format?: string;
+  webhookUrl?: string;
+}
+
+function parseArgs(args: string[]): ParsedArgs {
   const globalFlags = new Set(["--help", "-h", "--version", "-v", "--verbose"]);
-  
+
   let verbose = false;
+  let format: string | undefined;
+  let webhookUrl: string | undefined;
   const remainingArgs: string[] = [];
-  
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    
+
     if (arg === "--verbose") {
       verbose = true;
+    } else if (arg === "--format" || arg === "-f") {
+      i++;
+      if (i < args.length) {
+        format = args[i];
+      }
+    } else if (arg === "--webhook-url") {
+      i++;
+      if (i < args.length) {
+        webhookUrl = args[i];
+      }
     } else if (!globalFlags.has(arg)) {
       remainingArgs.push(arg);
     }
   }
-  
+
   const command = remainingArgs.length > 0 ? remainingArgs[0] : null;
   const commandArgs = remainingArgs.slice(1);
-  
-  return { command, commandArgs, verbose };
+
+  return { command, commandArgs, verbose, format, webhookUrl };
 }
 
 async function main(): Promise<number> {
@@ -136,8 +166,8 @@ async function main(): Promise<number> {
     return 0;
   }
   
-  // Parse args to extract --verbose and get command
-  const { command, commandArgs, verbose } = parseArgs(allArgs);
+  // Parse args to extract flags and get command
+  const { command, commandArgs, verbose, format, webhookUrl } = parseArgs(allArgs);
   
   if (!command) {
     showHelp();
@@ -162,11 +192,25 @@ async function main(): Promise<number> {
     case "add":
       if (commandArgs.length === 0) {
         console.error("Error: 'add' command requires at least one URL argument");
-        console.error("Usage: sb add [--verbose] <url> [<url2> ...]");
+        console.error("Usage: sb add [--verbose] [--format console|ndjson|webhook] [--webhook-url <url>] <url> [<url2> ...]");
+        console.error("\nOptions:");
+        console.error("  --verbose         Enable verbose output");
+        console.error("  --format, -f      Output format: console, ndjson, webhook (default: auto)");
+        console.error("  --webhook-url     Webhook URL for webhook format (required when format=webhook)");
+        return 2;
+      }
+      // Validate format if provided
+      const validFormats = ["console", "ndjson", "webhook", "auto"];
+      if (format && !validFormats.includes(format)) {
+        console.error(`Error: Invalid format "${format}". Valid options: ${validFormats.join(", ")}`);
         return 2;
       }
       const { addCommand } = await import("./commands/add.js");
-      const { exitCode } = await addCommand(commandArgs, { verbose });
+      const { exitCode } = await addCommand(commandArgs, { 
+        verbose, 
+        format: format as "console" | "ndjson" | "webhook" | "auto" | undefined, 
+        webhookUrl 
+      });
       return exitCode;
     case "queue":
       if (commandArgs.length === 0) {

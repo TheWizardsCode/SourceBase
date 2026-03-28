@@ -221,4 +221,83 @@ describe("CLI Add Command", () => {
       expect(stderr).not.toContain("Invalid URL: " + TEST_URLS.youtube);
     });
   });
+  
+  describe("context flags", () => {
+    it("should accept --channel-id flag", () => {
+      const { stderr } = runCli(["add", "--channel-id", "channel123", TEST_URLS.valid]);
+      
+      // Should not error on --channel-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept --message-id flag", () => {
+      const { stderr } = runCli(["add", "--message-id", "msg456", TEST_URLS.valid]);
+      
+      // Should not error on --message-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept --author-id flag", () => {
+      const { stderr } = runCli(["add", "--author-id", "user789", TEST_URLS.valid]);
+      
+      // Should not error on --author-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept all context flags together", () => {
+      const { stderr } = runCli([
+        "add",
+        "--channel-id", "channel123",
+        "--message-id", "msg456",
+        "--author-id", "user789",
+        TEST_URLS.valid
+      ]);
+      
+      // Should not error on any context flags
+      expect(stderr).not.toContain("Unknown");
+    });
+  });
+  
+  describe("format flags", () => {
+    it("should accept --format ndjson", () => {
+      const { stderr } = runCli(["add", "--format", "ndjson", TEST_URLS.valid]);
+      
+      // Should not error on --format flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid format");
+    });
+    
+    it("should accept --ndjson shorthand", () => {
+      const { stderr } = runCli(["add", "--ndjson", TEST_URLS.valid]);
+      
+      // Should not error on --ndjson flag
+      expect(stderr).not.toContain("Unknown");
+    });
+    
+    it("should reject invalid format", () => {
+      const { stderr, exitCode } = runCli(["add", "--format", "invalid", TEST_URLS.valid]);
+      
+      expect(exitCode).toBe(2);
+      expect(stderr).toContain("Invalid format");
+    });
+  });
+  
+  describe("webhook-url flag", () => {
+    it("should accept --webhook-url flag", () => {
+      const { stderr } = runCli(["add", "--webhook-url", "https://example.com/webhook", TEST_URLS.valid]);
+      
+      // Should not error on --webhook-url flag with valid URL
+      expect(stderr).not.toContain("Unknown");
+    });
+    
+    it("should reject invalid webhook-url", () => {
+      const { stderr, exitCode } = runCli(["add", "--webhook-url", "not-a-url", TEST_URLS.valid]);
+      
+      expect(exitCode).toBe(2);
+      expect(stderr).toContain("not a valid URL");
+    });
+  });
 });

@@ -2,11 +2,15 @@ import { cliConfig as config } from "../../config/cli.js";
 import { getDbPool } from "../../db/client.js";
 import { DocumentQueueRepository } from "../../db/queue-repository.js";
 
+interface CliContext {
+  channelId?: string;
+  messageId?: string;
+  authorId?: string;
+}
+
 interface QueueOptions {
   verbose?: boolean;
-  sourceId?: string;
-  sourceContext?: string;
-  authorId?: string;
+  context?: CliContext;
 }
 
 interface QueueResult {
@@ -31,11 +35,12 @@ async function queueSingleUrl(url: string, options: QueueOptions): Promise<Queue
     const repository = new DocumentQueueRepository(pool);
     
     // Create a queue entry with source context (CLI or Discord)
+    // Use context from CLI flags if provided, otherwise use defaults
     const entry = await repository.create({
       url,
-      sourceId: options.sourceId || `cli-${Date.now()}`,
-      sourceContext: options.sourceContext || "cli",
-      authorId: options.authorId || "cli-user"
+      sourceId: options.context?.messageId || `cli-${Date.now()}`,
+      sourceContext: options.context?.channelId || "cli",
+      authorId: options.context?.authorId || "cli-user"
     });
     
     return {

@@ -14,10 +14,17 @@ import {
   type PresenterFormat,
 } from "../presenters/index.js";
 
+interface CliContext {
+  channelId?: string;
+  messageId?: string;
+  authorId?: string;
+}
+
 interface AddOptions {
   verbose?: boolean;
   format?: PresenterFormat;
   webhookUrl?: string;
+  context?: CliContext;
 }
 
 interface AddResult {
@@ -55,11 +62,12 @@ async function processSingleUrl(
 ): Promise<AddResult> {
   try {
     // Create a SyntheticMessage for CLI usage (no Discord dependencies)
+    // Use context from CLI flags if provided, otherwise use defaults
     const syntheticMessage = {
-      id: `cli-${Date.now()}`,
+      id: options.context?.messageId || `cli-${Date.now()}`,
       content: url,
-      channelId: "cli",
-      authorId: "cli-user",
+      channelId: options.context?.channelId || "cli",
+      authorId: options.context?.authorId || "cli-user",
     };
 
     // Track the result

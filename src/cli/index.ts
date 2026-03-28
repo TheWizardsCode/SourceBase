@@ -14,12 +14,12 @@ const commands: Command[] = [
   {
     name: "add",
     description: "Add a URL to the database",
-    usage: "sb add [--verbose] [--format console|ndjson|webhook] [--webhook-url <url>] <url> [<url2> ...]",
+    usage: "sb add [--verbose] [--format console|ndjson|webhook] [--webhook-url <url>] [--channel-id <id>] [--message-id <id>] [--author-id <id>] <url> [<url2> ...]",
   },
   {
     name: "queue",
     description: "Queue a URL for later processing",
-    usage: "sb queue [--verbose] <url> [<url2> ...]",
+    usage: "sb queue [--verbose] [--channel-id <id>] [--message-id <id>] [--author-id <id>] <url> [<url2> ...]",
   },
   {
     name: "search",
@@ -57,7 +57,13 @@ Progress Output Formats (add command):
                          - ndjson:  One JSON line per event
                          - webhook: POST events to webhook URL
                          - auto:    console in TTY, ndjson otherwise
+  --ndjson               Shorthand for --format ndjson
   --webhook-url <url>    Webhook URL (required when format=webhook)
+
+Context Flags (for bot integration):
+  --channel-id <id>      Discord channel ID to associate with the operation
+  --message-id <id>      Discord message ID to associate with the operation
+  --author-id <id>       Discord author ID to associate with the operation
 
 Examples:
   sb add https://example.com/article
@@ -105,20 +111,29 @@ async function validateConfig(): Promise<boolean> {
   }
 }
 
+interface CliContext {
+  channelId?: string;
+  messageId?: string;
+  authorId?: string;
+}
+
 interface ParsedArgs {
   command: string | null;
   commandArgs: string[];
   verbose: boolean;
   format?: string;
   webhookUrl?: string;
+  context: CliContext;
 }
 
 function parseArgs(args: string[]): ParsedArgs {
-  const globalFlags = new Set(["--help", "-h", "--version", "-v", "--verbose"]);
+  const globalFlags = new Set(["--help", "-h", "--version", "-v", "--verbose", "--ndjson"]);
 
   let verbose = false;
   let format: string | undefined;
   let webhookUrl: string | undefined;
+  let ndjson = false;
+  const context: CliContext = {};
   const remainingArgs: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -136,15 +151,51 @@ function parseArgs(args: string[]): ParsedArgs {
       if (i < args.length) {
         webhookUrl = args[i];
       }
+    } else if (arg === "--ndjson") {
+      ndjson = true;
+    } else if (arg === "--channel-id") {
+      i++;
+      if (i < args.length) {
+        context.channelId = args[i];
+      }
+    } else if (arg === "--message-id") {
+      i++;
+      if (i < args.length) {
+        context.messageId = args[i];
+      }
+    } else if (arg === "--author-id") {
+      i++;
+      if (i < args.length) {
+        context.authorId = args[i];
+      }
     } else if (!globalFlags.has(arg)) {
       remainingArgs.push(arg);
     }
   }
 
+  // --ndjson flag is a shorthand for --format ndjson
+  if (ndjson && !format) {
+    format = "ndjson";
+  }
+
   const command = remainingArgs.length > 0 ? remainingArgs[0] : null;
   const commandArgs = remainingArgs.slice(1);
 
-  return { command, commandArgs, verbose, format, webhookUrl };
+  return { command, commandArgs, verbose, format, webhookUrl, context };
+}
+
+function validateWebhookUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "Error: --webhook-url must be a valid HTTP or HTTPS URL";
+    }
+    return undefined;
+  } catch {
+    return `Error: --webhook-url is not a valid URL: ${url}`;
+  }
 }
 
 async function main(): Promise<number> {
@@ -167,7 +218,14 @@ async function main(): Promise<number> {
   }
   
   // Parse args to extract flags and get command
-  const { command, commandArgs, verbose, format, webhookUrl } = parseArgs(allArgs);
+  const { command, commandArgs, verbose, format, webhookUrl, context } = parseArgs(allArgs);
+  
+  // Validate webhook URL if provided
+  const webhookUrlError = validateWebhookUrl(webhookUrl);
+  if (webhookUrlError) {
+    console.error(webhookUrlError);
+    return 2;
+  }
   
   if (!command) {
     showHelp();
@@ -192,11 +250,15 @@ async function main(): Promise<number> {
     case "add":
       if (commandArgs.length === 0) {
         console.error("Error: 'add' command requires at least one URL argument");
-        console.error("Usage: sb add [--verbose] [--format console|ndjson|webhook] [--webhook-url <url>] <url> [<url2> ...]");
+        console.error("Usage: sb add [--verbose] [--format console|ndjson|webhook] [--webhook-url <url>] [--channel-id <id>] [--message-id <id>] [--author-id <id>] <url> [<url2> ...]");
         console.error("\nOptions:");
         console.error("  --verbose         Enable verbose output");
         console.error("  --format, -f      Output format: console, ndjson, webhook (default: auto)");
-        console.error("  --webhook-url     Webhook URL for webhook format (required when format=webhook)");
+        console.error("  --ndjson          Shorthand for --format ndjson");
+        console.error("  --webhook-url     Webhook URL for webhook format");
+        console.error("  --channel-id      Discord channel ID for context");
+        console.error("  --message-id      Discord message ID for context");
+        console.error("  --author-id       Discord author ID for context");
         return 2;
       }
       // Validate format if provided
@@ -209,17 +271,23 @@ async function main(): Promise<number> {
       const { exitCode } = await addCommand(commandArgs, { 
         verbose, 
         format: format as "console" | "ndjson" | "webhook" | "auto" | undefined, 
-        webhookUrl 
+        webhookUrl,
+        context
       });
       return exitCode;
     case "queue":
       if (commandArgs.length === 0) {
         console.error("Error: 'queue' command requires at least one URL argument");
-        console.error("Usage: sb queue [--verbose] <url> [<url2> ...]");
+        console.error("Usage: sb queue [--verbose] [--channel-id <id>] [--message-id <id>] [--author-id <id>] <url> [<url2> ...]");
+        console.error("\nOptions:");
+        console.error("  --verbose         Enable verbose output");
+        console.error("  --channel-id      Discord channel ID for context");
+        console.error("  --message-id      Discord message ID for context");
+        console.error("  --author-id       Discord author ID for context");
         return 2;
       }
       const { queueCommand } = await import("./commands/queue.js");
-      const { exitCode: queueExitCode } = await queueCommand(commandArgs, { verbose });
+      const { exitCode: queueExitCode } = await queueCommand(commandArgs, { verbose, context });
       return queueExitCode;
     case "search":
       if (commandArgs.length === 0) {

@@ -157,4 +157,53 @@ describe("CLI Queue Command", () => {
       expect(exitCode).toBe(1);
     });
   });
+  
+  describe("context flags", () => {
+    it("should accept --channel-id flag", () => {
+      const { stderr } = runCli(["queue", "--channel-id", "channel123", TEST_URLS.valid]);
+      
+      // Should not error on --channel-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept --message-id flag", () => {
+      const { stderr } = runCli(["queue", "--message-id", "msg456", TEST_URLS.valid]);
+      
+      // Should not error on --message-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept --author-id flag", () => {
+      const { stderr } = runCli(["queue", "--author-id", "user789", TEST_URLS.valid]);
+      
+      // Should not error on --author-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept all context flags together", () => {
+      const { stderr } = runCli([
+        "queue",
+        "--channel-id", "channel123",
+        "--message-id", "msg456",
+        "--author-id", "user789",
+        TEST_URLS.valid
+      ]);
+      
+      // Should not error on any context flags
+      expect(stderr).not.toContain("Unknown");
+    });
+    
+    it("should show context flags in help output", () => {
+      const { stdout } = runCli(["queue", "--help"].concat([TEST_URLS.valid]));
+      
+      // Check that the help output includes context flags
+      const { stdout: helpOutput } = runCli(["--help"]);
+      expect(helpOutput).toContain("--channel-id");
+      expect(helpOutput).toContain("--message-id");
+      expect(helpOutput).toContain("--author-id");
+    });
+  });
 });

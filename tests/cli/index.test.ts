@@ -163,4 +163,100 @@ describe("CLI Entry Point", () => {
       expect(stdout).toContain("Display database statistics");
     });
   });
+  
+  describe("context flags", () => {
+    it("should display context flags in help", () => {
+      const { stdout, exitCode } = runCli(["--help"]);
+      
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("--channel-id");
+      expect(stdout).toContain("--message-id");
+      expect(stdout).toContain("--author-id");
+    });
+    
+    it("should accept --channel-id flag with add command", () => {
+      const { stderr } = runCli(["add", "--channel-id", "12345", "https://example.com"]);
+      
+      // Should not error on --channel-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept --message-id flag with queue command", () => {
+      const { stderr } = runCli(["queue", "--message-id", "67890", "https://example.com"]);
+      
+      // Should not error on --message-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept --author-id flag", () => {
+      const { stderr } = runCli(["add", "--author-id", "user123", "https://example.com"]);
+      
+      // Should not error on --author-id flag
+      expect(stderr).not.toContain("Unknown");
+      expect(stderr).not.toContain("Invalid");
+    });
+    
+    it("should accept all context flags together", () => {
+      const { stderr } = runCli([
+        "queue",
+        "--channel-id", "channel123",
+        "--message-id", "msg456",
+        "--author-id", "user789",
+        "https://example.com"
+      ]);
+      
+      // Should not error on any context flags
+      expect(stderr).not.toContain("Unknown");
+    });
+  });
+  
+  describe("format flags", () => {
+    it("should display format options in help", () => {
+      const { stdout, exitCode } = runCli(["--help"]);
+      
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("--format");
+      expect(stdout).toContain("--ndjson");
+    });
+    
+    it("should accept --ndjson flag as shorthand for --format ndjson", () => {
+      const { stderr } = runCli(["add", "--ndjson", "https://example.com"]);
+      
+      // Should not error on --ndjson flag
+      expect(stderr).not.toContain("Unknown");
+    });
+  });
+  
+  describe("webhook-url validation", () => {
+    it("should display webhook-url option in help", () => {
+      const { stdout, exitCode } = runCli(["--help"]);
+      
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("--webhook-url");
+    });
+    
+    it("should return exit code 2 for invalid webhook-url", () => {
+      const { stderr, exitCode } = runCli(["add", "--webhook-url", "not-a-url", "https://example.com"]);
+      
+      expect(exitCode).toBe(2);
+      expect(stderr).toContain("not a valid URL");
+    });
+    
+    it("should return exit code 2 for non-HTTP webhook-url", () => {
+      const { stderr, exitCode } = runCli(["add", "--webhook-url", "ftp://example.com/hook", "https://example.com"]);
+      
+      expect(exitCode).toBe(2);
+      expect(stderr).toContain("must be a valid HTTP or HTTPS URL");
+    });
+    
+    it("should accept valid HTTPS webhook-url", () => {
+      const { stderr } = runCli(["add", "--webhook-url", "https://example.com/webhook", "https://example.com"]);
+      
+      // Should not error on valid webhook URL
+      expect(stderr).not.toContain("not a valid URL");
+      expect(stderr).not.toContain("Unknown");
+    });
+  });
 });

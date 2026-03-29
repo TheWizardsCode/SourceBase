@@ -30,9 +30,84 @@
  * ```
  */
 
-import { spawn } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import { createInterface } from "readline";
 import type { CliProgressEvent } from "../cli/presenters/types.js";
+
+// ============================================================================
+// Child Process Tracking (for graceful shutdown)
+// ============================================================================
+
+/** Set of active child processes */
+const activeChildProcesses = new Set<ChildProcess>();
+
+/** Timeout in ms before sending SIGKILL after SIGTERM */
+const SIGKILL_TIMEOUT_MS = 5000;
+
+/**
+ * Track a child process for graceful shutdown
+ */
+function trackChildProcess(child: ChildProcess): void {
+  activeChildProcesses.add(child);
+  child.on("exit", () => {
+    activeChildProcesses.delete(child);
+  });
+}
+
+/**
+ * Get the number of currently active child processes
+ */
+export function getActiveChildProcessCount(): number {
+  return activeChildProcesses.size;
+}
+
+/**
+ * Terminate all active child processes gracefully
+ * Sends SIGTERM first, then SIGKILL after timeout if needed
+ * 
+ * @returns Promise that resolves when all processes have terminated
+ */
+export async function terminateAllChildProcesses(): Promise<void> {
+  if (activeChildProcesses.size === 0) {
+    return;
+  }
+
+  const children = Array.from(activeChildProcesses);
+  const terminationPromises: Promise<void>[] = [];
+
+  for (const child of children) {
+    terminationPromises.push(
+      new Promise<void>((resolve) => {
+        // If process already exited, resolve immediately
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve();
+          return;
+        }
+
+        // Set up exit listener
+        const onExit = () => {
+          clearTimeout(sigkillTimer);
+          resolve();
+        };
+
+        child.once("exit", onExit);
+        child.once("error", onExit);
+
+        // Send SIGTERM
+        child.kill("SIGTERM");
+
+        // Schedule SIGKILL after timeout
+        const sigkillTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, SIGKILL_TIMEOUT_MS);
+      })
+    );
+  }
+
+  await Promise.all(terminationPromises);
+}
 
 // ============================================================================
 // Types
@@ -184,7 +259,10 @@ function runCliSubprocess(
     env: { ...process.env, ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  
+
+  // Track the child process for graceful shutdown
+  trackChildProcess(subprocess);
+
   // Create readline interface for stdout
   const stdoutRl = createInterface({
     input: subprocess.stdout!,

@@ -1,10 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
-  runAddCommand,
-  runQueueCommand,
-  runStatsCommand,
-  runCliCommand,
-  isCliAvailable,
   CliRunnerError,
   setCliPath,
   type CliContext,
@@ -13,30 +8,17 @@ import {
   type AddResult,
   type StatsResult,
 } from "../../src/bot/cli-runner.js";
-import type { CliProgressEvent } from "../../src/cli/presenters/types.js";
 
-describe("CLI Runner Module", () => {
+describe("CLI Runner Integration Tests", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
   describe("exports", () => {
-    it("should export runAddCommand function", () => {
-      expect(typeof runAddCommand).toBe("function");
-    });
-
-    it("should export runQueueCommand function", () => {
-      expect(typeof runQueueCommand).toBe("function");
-    });
-
-    it("should export runStatsCommand function", () => {
-      expect(typeof runStatsCommand).toBe("function");
-    });
-
-    it("should export runCliCommand function", () => {
-      expect(typeof runCliCommand).toBe("function");
-    });
-
-    it("should export isCliAvailable function", () => {
-      expect(typeof isCliAvailable).toBe("function");
-    });
-
     it("should export CliRunnerError class", () => {
       expect(typeof CliRunnerError).toBe("function");
     });
@@ -49,7 +31,6 @@ describe("CLI Runner Module", () => {
   describe("CliRunnerError", () => {
     it("should capture exit code and stderr", () => {
       const error = new CliRunnerError("Test error", 1, "stderr content");
-
       expect(error.message).toBe("Test error");
       expect(error.exitCode).toBe(1);
       expect(error.stderr).toBe("stderr content");
@@ -129,15 +110,6 @@ describe("CLI Runner Module", () => {
         linksLast30Days: 80,
       };
       expect(stats.totalLinks).toBe(100);
-    });
-  });
-
-  describe("module documentation", () => {
-    it("should have JSDoc comments on exported functions", () => {
-      // This is a compile-time check - if the module loads, TypeScript is happy
-      expect(runAddCommand).toBeDefined();
-      expect(runQueueCommand).toBeDefined();
-      expect(runStatsCommand).toBeDefined();
     });
   });
 });

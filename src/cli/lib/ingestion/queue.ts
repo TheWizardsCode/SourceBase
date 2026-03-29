@@ -2,7 +2,7 @@ import type { Message } from "discord.js";
 import type { Logger } from "../logger.js";
 import type { IngestionService } from "./service.js";
 import { DocumentQueueRepository } from "../db/queue-repository.js";
-import type { PendingQueueItem } from "../interfaces/cli-types.js";
+import type { PendingQueueItem } from "../../../interfaces/cli-types.js";
 
 export interface QueueItem {
   message: Message;

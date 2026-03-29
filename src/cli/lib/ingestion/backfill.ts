@@ -1,7 +1,7 @@
-import { botConfig as config } from "../config/bot.js";
-import type { LinkRecord, LinkRepository } from "../db/repository.js";
-import type { Logger } from "../logger.js";
-import type { YouTubeApiClient } from "./youtube.js";
+import { botConfig as config } from "../../config/bot.js";
+import type { LinkRecord, LinkRepository } from "../../db/repository.js";
+import type { Logger } from "../../logger.js";
+import type { YouTubeApiClient } from "../ingestion/youtube.js";
 
 // Simple UUID generator for session IDs
 function generateSessionId(): string {

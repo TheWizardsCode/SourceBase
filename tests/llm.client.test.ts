@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { OpenAiCompatibleLlmClient } from "../src/llm/client.js";
+import { OpenAiCompatibleLlmClient } from "../src/cli/lib/llm/client.js";
 
 describe("OpenAiCompatibleLlmClient", () => {
   it("returns embedding vectors from proxy response", async () => {

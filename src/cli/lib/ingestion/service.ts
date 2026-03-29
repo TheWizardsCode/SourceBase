@@ -1,10 +1,10 @@
-import type { LinkRecord } from "../db/repository.js";
-import type { Logger } from "../logger.js";
+import type { LinkRecord } from "../../db/repository.js";
+import type { Logger } from "../../logger.js";
 import { extractUrls, isYouTubeUrl, extractYouTubeVideoId, isPdfUrl, isFileUrl } from "./url.js";
 import type { ContentExtractor } from "./extractor.js";
 import type { YouTubeApiClient } from "./youtube.js";
-import { cliConfig as config } from "../config/cli.js";
-import type { SyntheticMessage } from "../interfaces/cli-types.js";
+import { cliConfig as config } from "../../config/cli.js";
+import type { SyntheticMessage } from "../../interfaces/cli-types.js";
 
 export interface LinkStore {
   upsertLink(link: LinkRecord): Promise<unknown>;

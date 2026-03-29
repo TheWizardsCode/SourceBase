@@ -1,6 +1,6 @@
 import type { Client, Message, TextChannel } from "discord.js";
-import type { Logger } from "../logger.js";
-import type { LinkRepository } from "../db/repository.js";
+import type { Logger } from "../../logger.js";
+import type { LinkRepository } from "../../db/repository.js";
 import type { DocumentQueue } from "./queue.js";
 import { extractUrls } from "./url.js";
 

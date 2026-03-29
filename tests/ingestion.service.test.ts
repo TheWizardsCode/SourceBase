@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { LinkRecord } from "../src/db/repository.js";
-import { IngestionService } from "../src/ingestion/service.js";
+import type { LinkRecord } from "../src/cli/lib/db/repository.js";
+import { IngestionService } from "../src/cli/lib/ingestion/service.js";
 import { Logger } from "../src/logger.js";
 
 interface MessageStub {

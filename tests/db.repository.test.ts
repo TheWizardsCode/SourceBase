@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { Queryable } from "../src/db/repository.js";
-import { LinkRepository } from "../src/db/repository.js";
+import type { Queryable } from "../src/cli/lib/db/repository.js";
+import { LinkRepository } from "../src/cli/lib/db/repository.js";
 
 describe("LinkRepository", () => {
   it("inserts new links and returns stored row", async () => {

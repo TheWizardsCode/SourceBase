@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Client, Message, TextChannel, Collection } from "discord.js";
-import { StartupRecoveryService } from "../src/ingestion/startup-recovery.js";
-import type { LinkRepository } from "../src/db/repository.js";
-import type { DocumentQueue } from "../src/ingestion/queue.js";
+import { StartupRecoveryService } from "../src/cli/lib/ingestion/startup-recovery.js";
+import type { LinkRepository } from "../src/cli/lib/db/repository.js";
+import type { DocumentQueue } from "../src/cli/lib/ingestion/queue.js";
 import type { Logger } from "../src/logger.js";
 
 describe("StartupRecoveryService", () => {

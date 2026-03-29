@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { DocumentQueue, type QueueUpdateStatus } from "../src/ingestion/queue.js";
-import { DocumentQueueRepository } from "../src/db/queue-repository.js";
+import { DocumentQueue, type QueueUpdateStatus } from "../src/cli/lib/ingestion/queue.js";
+import { DocumentQueueRepository } from "../src/cli/lib/db/queue-repository.js";
 import type { Logger } from "../src/logger.js";
-import type { IngestionService } from "../src/ingestion/service.js";
+import type { IngestionService } from "../src/cli/lib/ingestion/service.js";
 
 describe("DocumentQueue - restart recovery", () => {
   it("initializes and returns pending items with their Discord metadata", async () => {

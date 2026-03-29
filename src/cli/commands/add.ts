@@ -1,10 +1,10 @@
 import { cliConfig as config } from "../../config/cli.js";
-import { getDbPool } from "../../db/client.js";
-import { LinkRepository } from "../../db/repository.js";
-import { ArticleExtractorContentExtractor, FileContentExtractor } from "../../ingestion/extractor.js";
-import { IngestionService, type ProgressUpdate, type IngestionProgress, type ProgressCallback } from "../../ingestion/service.js";
-import { YouTubeApiClient } from "../../ingestion/youtube.js";
-import { OpenAiCompatibleLlmClient } from "../../llm/client.js";
+import { getDbPool } from "../lib/db/client.js";
+import { LinkRepository } from "../lib/db/repository.js";
+import { ArticleExtractorContentExtractor, FileContentExtractor } from "../lib/ingestion/extractor.js";
+import { IngestionService, type ProgressUpdate, type IngestionProgress, type ProgressCallback } from "../lib/ingestion/service.js";
+import { YouTubeApiClient } from "../lib/ingestion/youtube.js";
+import { OpenAiCompatibleLlmClient } from "../lib/llm/client.js";
 import { Logger } from "../../logger.js";
 import { getQdrantVectorStore } from "../../vector/qdrant-store.js";
 import {

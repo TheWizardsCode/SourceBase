@@ -1,7 +1,7 @@
 import { cliConfig as config } from "../../config/cli.js";
-import { getDbPool } from "../../db/client.js";
-import { LinkRepository, type SearchResult } from "../../db/repository.js";
-import { OpenAiCompatibleLlmClient } from "../../llm/client.js";
+import { getDbPool } from "../lib/db/client.js";
+import { LinkRepository, type SearchResult } from "../lib/db/repository.js";
+import { OpenAiCompatibleLlmClient } from "../lib/llm/client.js";
 
 interface SearchOptions {
   verbose?: boolean;

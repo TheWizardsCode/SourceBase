@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-import { BackfillService } from "../src/ingestion/backfill.js";
-import type { LinkRecord, LinkRepository } from "../src/db/repository.js";
+import { BackfillService } from "../src/cli/lib/ingestion/backfill.js";
+import type { LinkRecord, LinkRepository } from "../src/cli/lib/db/repository.js";
 import type { Logger } from "../src/logger.js";
-import type { YouTubeApiClient } from "../src/ingestion/youtube.js";
+import type { YouTubeApiClient } from "../src/cli/lib/ingestion/youtube.js";
 
 describe("BackfillService", () => {
   let service: BackfillService;

@@ -142,9 +142,13 @@ function parseArgs(args: string[]): ParsedArgs {
     if (arg === "--verbose") {
       verbose = true;
     } else if (arg === "--format" || arg === "-f") {
-      i++;
-      if (i < args.length) {
+      const nextArg = args[i + 1];
+      if (nextArg && !nextArg.startsWith("-")) {
+        i++;
         format = args[i];
+      } else {
+        // --format has no value, don't consume it so command validation can handle it
+        remainingArgs.push(arg);
       }
     } else if (arg === "--webhook-url") {
       i++;
@@ -232,11 +236,6 @@ async function main(): Promise<number> {
     return 2; // Invalid args
   }
   
-  // Validate configuration before executing commands
-  if (!(await validateConfig())) {
-    return 1; // Error
-  }
-  
   // Route to commands
   const knownCommands = commands.map(cmd => cmd.name);
   
@@ -267,6 +266,10 @@ async function main(): Promise<number> {
         console.error(`Error: Invalid format "${format}". Valid options: ${validFormats.join(", ")}`);
         return 2;
       }
+      // Validate configuration before executing command
+      if (!(await validateConfig())) {
+        return 1; // Error
+      }
       const { addCommand } = await import("./commands/add.js");
       const { exitCode } = await addCommand(commandArgs, { 
         verbose, 
@@ -286,11 +289,69 @@ async function main(): Promise<number> {
         console.error("  --author-id       Discord author ID for context");
         return 2;
       }
+      // Validate configuration before executing command
+      if (!(await validateConfig())) {
+        return 1; // Error
+      }
       const { queueCommand } = await import("./commands/queue.js");
       const { exitCode: queueExitCode } = await queueCommand(commandArgs, { verbose, context });
       return queueExitCode;
-    case "search":
-      if (commandArgs.length === 0) {
+    case "search": {
+      // Validate format if provided (extracted by parseArgs)
+      if (format) {
+        if (!["table", "json", "urls-only"].includes(format)) {
+          console.error(`Error: Invalid format "${format}". Valid options: table, json, urls-only`);
+          return 2;
+        }
+      }
+      
+      // Parse and validate search args before config validation
+      // to return exit code 2 for invalid arguments
+      let searchLimit: number | undefined;
+      let searchFormat: string | undefined;
+      let searchQueryArgs: string[] = [];
+      
+      let i = 0;
+      while (i < commandArgs.length) {
+        const arg = commandArgs[i];
+        
+        if (arg === "--limit" || arg === "-l") {
+          i++;
+          const nextArg = commandArgs[i];
+          if (!nextArg || nextArg.startsWith("-")) {
+            console.error("Error: --limit requires a value");
+            return 2;
+          }
+          const limit = parseInt(nextArg, 10);
+          if (isNaN(limit) || limit < 1 || limit > 20) {
+            console.error("Error: --limit must be between 1 and 20");
+            return 2;
+          }
+          searchLimit = limit;
+        } else if (arg === "--format" || arg === "-f") {
+          i++;
+          const nextArg = commandArgs[i];
+          if (!nextArg || nextArg.startsWith("-")) {
+            console.error("Error: --format requires a value");
+            return 2;
+          }
+          if (!["table", "json", "urls-only"].includes(nextArg)) {
+            console.error(`Error: Invalid format "${nextArg}". Valid options: table, json, urls-only`);
+            return 2;
+          }
+          searchFormat = nextArg;
+        } else if (arg === "--verbose" || arg === "-v") {
+          // Valid flag, skip
+        } else if (!arg.startsWith("-")) {
+          searchQueryArgs.push(arg);
+        } else {
+          console.error(`Error: Unknown option "${arg}"`);
+          return 2;
+        }
+        i++;
+      }
+      
+      if (searchQueryArgs.length === 0) {
         console.error("Error: 'search' command requires a query argument");
         console.error("Usage: sb search [options] <query>");
         console.error("\nOptions:");
@@ -298,13 +359,58 @@ async function main(): Promise<number> {
         console.error("  --format, -f      Output format: table, json, urls-only (default: table)");
         return 2;
       }
+      
+      // Validate configuration before executing command
+      if (!(await validateConfig())) {
+        return 1; // Error
+      }
       const { searchCommand } = await import("./commands/search.js");
       const { exitCode: searchExitCode } = await searchCommand(commandArgs);
       return searchExitCode;
-    case "stats":
+    }
+    case "stats": {
+      // Validate format if provided (extracted by parseArgs)
+      if (format) {
+        if (!["table", "json"].includes(format)) {
+          console.error(`Error: Invalid format "${format}". Valid options: table, json`);
+          return 2;
+        }
+      }
+      
+      // Parse and validate stats args before config validation
+      // to return exit code 2 for invalid arguments
+      let i = 0;
+      while (i < commandArgs.length) {
+        const arg = commandArgs[i];
+        
+        if (arg === "--format" || arg === "-f") {
+          i++;
+          const nextArg = commandArgs[i];
+          if (!nextArg || nextArg.startsWith("-")) {
+            console.error("Error: --format requires a value");
+            return 2;
+          }
+          if (!["table", "json"].includes(nextArg)) {
+            console.error(`Error: Invalid format "${nextArg}". Valid options: table, json`);
+            return 2;
+          }
+        } else if (arg === "--raw" || arg === "-r") {
+          // Valid flag, skip
+        } else {
+          console.error(`Error: Unknown option "${arg}"`);
+          return 2;
+        }
+        i++;
+      }
+      
+      // Validate configuration before executing command
+      if (!(await validateConfig())) {
+        return 1; // Error
+      }
       const { statsCommand } = await import("./commands/stats.js");
       const { exitCode: statsExitCode } = await statsCommand(commandArgs);
       return statsExitCode;
+    }
     default:
       showUnknownCommandError(command);
       return 2;

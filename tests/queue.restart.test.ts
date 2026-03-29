@@ -124,9 +124,9 @@ function createFakePool() {
         const entry = {
           id: idCounter,
           url: String(params[0]),
-          discord_message_id: String(params[1]),
-          discord_channel_id: String(params[2]),
-          discord_author_id: String(params[3]),
+          source_id: String(params[1]),
+          source_context: String(params[2]),
+          author_id: String(params[3]),
           status: "pending",
           attempts: 0,
           error_message: null,

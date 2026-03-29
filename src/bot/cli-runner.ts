@@ -32,7 +32,10 @@
 
 import { spawn, type ChildProcess } from "child_process";
 import { createInterface } from "readline";
-import type { CliProgressEvent } from "../cli/presenters/types.js";
+import type { CliProgressEvent } from "../interfaces/cli-types.js";
+
+// Re-export for consumers
+export type { CliProgressEvent };
 
 // ============================================================================
 // Child Process Tracking (for graceful shutdown)

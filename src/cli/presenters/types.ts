@@ -7,40 +7,10 @@
  * @module cli/presenters/types
  */
 
-import type { ProgressUpdate, IngestionProgress, Logger } from "../../interfaces/cli-types.js";
+import type { ProgressUpdate, IngestionProgress, Logger, CliProgressEvent } from "../../interfaces/cli-types.js";
 
-/**
- * CLI Progress Event - Neutral schema for progress updates
- * Used by all CLI presenters
- */
-export interface CliProgressEvent {
-  /** Event type identifier */
-  type: "progress";
-  /** Current processing phase */
-  phase: ProgressUpdate["phase"];
-  /** URL being processed */
-  url: string;
-  /** Current item number in batch */
-  current: number;
-  /** Total items in batch */
-  total: number;
-  /** ISO 8601 timestamp */
-  timestamp: string;
-  /** Optional error message for failed phase */
-  message?: string;
-  /** Generated summary (available in completed phase) */
-  summary?: string;
-  /** Document title (available in completed phase) */
-  title?: string;
-  /** Current chunk number (for chunked operations) */
-  chunkCurrent?: number;
-  /** Total chunks (for chunked operations) */
-  chunkTotal?: number;
-  /** Type of chunking operation */
-  chunkType?: "summarizing" | "embedding";
-  /** Whether this is an update to existing document */
-  isUpdate?: boolean;
-}
+// Re-export CliProgressEvent from shared types
+export type { CliProgressEvent };
 
 /**
  * Options for creating CLI progress presenters

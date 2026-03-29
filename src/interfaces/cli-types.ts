@@ -412,3 +412,57 @@ export interface SyntheticMessage {
   /** Optional: React function for bot use */
   react?: (emoji: string) => Promise<void>;
 }
+
+// ============================================================================
+// CLI Progress Event Types
+// ============================================================================
+
+/**
+ * CLI Progress Event - Neutral schema for progress updates
+ * Used by CLI presenters and consumed by bot for Discord message updates
+ * 
+ * This type is shared between CLI and bot to enable subprocess communication
+ * via NDJSON without creating a circular dependency.
+ * 
+ * @example
+ * ```typescript
+ * const event: CliProgressEvent = {
+ *   type: "progress",
+ *   phase: "summarizing",
+ *   url: "https://example.com",
+ *   current: 1,
+ *   total: 1,
+ *   timestamp: "2026-03-29T12:00:00.000Z",
+ *   chunkCurrent: 2,
+ *   chunkTotal: 5
+ * };
+ * ```
+ */
+export interface CliProgressEvent {
+  /** Event type identifier */
+  type: "progress";
+  /** Current processing phase */
+  phase: ProgressPhase;
+  /** URL being processed */
+  url: string;
+  /** Current item number in batch */
+  current: number;
+  /** Total items in batch */
+  total: number;
+  /** ISO 8601 timestamp */
+  timestamp: string;
+  /** Optional error message for failed phase */
+  message?: string;
+  /** Generated summary (available in completed phase) */
+  summary?: string;
+  /** Document title (available in completed phase) */
+  title?: string;
+  /** Current chunk number (for chunked operations) */
+  chunkCurrent?: number;
+  /** Total chunks (for chunked operations) */
+  chunkTotal?: number;
+  /** Type of chunking operation */
+  chunkType?: "summarizing" | "embedding";
+  /** Whether this is an update to existing document */
+  isUpdate?: boolean;
+}

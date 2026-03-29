@@ -4,8 +4,7 @@ import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
 import { isLikelyContentQuery } from "./query/detector.js";
 import { runAddCommand, runQueueCommand, runStatsCommand, type AddResult } from "./bot/cli-runner.js";
-import type { CliProgressEvent } from "./cli/presenters/types.js";
-import type { ProgressPhase, QueueUpdateStatus, PendingQueueItem } from "./interfaces/cli-types.js";
+import type { CliProgressEvent, ProgressPhase, QueueUpdateStatus, PendingQueueItem } from "./interfaces/cli-types.js";
 
 // ============================================================================
 // Logger

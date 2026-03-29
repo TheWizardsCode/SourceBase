@@ -1,11 +1,10 @@
-import type { Message } from "discord.js";
 import type { Logger } from "../logger.js";
 import type { IngestionService } from "./service.js";
 import { DocumentQueueRepository } from "../db/queue-repository.js";
-import type { PendingQueueItem } from "../../../interfaces/cli-types.js";
+import type { PendingQueueItem, SyntheticMessage } from "../../../interfaces/cli-types.js";
 
 export interface QueueItem {
-  message: Message;
+  message: SyntheticMessage;
   url: string;
   dbId?: number;
 }
@@ -50,17 +49,17 @@ export class DocumentQueue {
     const pendingItems: PendingQueueItem[] = [];
 
     for (const entry of pendingEntries) {
-      // Create a minimal message-like object with necessary fields
-      const syntheticMessage = {
+      // Create a minimal SyntheticMessage object with necessary fields
+      const syntheticMessage: SyntheticMessage = {
         id: entry.sourceId,
         channelId: entry.sourceContext,
-        channel: { type: 'GUILD_TEXT' },
-        author: { id: entry.authorId },
+        authorId: entry.authorId,
         content: entry.url,
         client: { user: { id: '' } },
         react: async () => {},
-        reply: async () => {},
-      } as unknown as Message;
+        // DB-derived pending items are not bot messages
+        isBot: false,
+      };
 
       this.queue.push({
         message: syntheticMessage,
@@ -100,7 +99,7 @@ export class DocumentQueue {
    * Each URL becomes a separate queue item for independent processing
    * Checks for duplicates and skips URLs already in the queue
    */
-  async enqueue(message: Message): Promise<void> {
+  async enqueue(message: SyntheticMessage): Promise<void> {
     const urls = this.extractUrls(message.content);
     await this.enqueueUrls(urls, message);
   }
@@ -128,16 +127,16 @@ export class DocumentQueue {
         for (const url of newUrls) {
           const entry = await this.options.repository.getByUrl(url);
 
-          const syntheticMessage = {
+          const syntheticMessage: SyntheticMessage = {
             id: entry ? entry.sourceId : `db-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
             channelId: entry ? entry.sourceContext : "",
-            channel: { type: 'GUILD_TEXT' },
-            author: { id: entry ? entry.authorId : 'external' },
+            authorId: entry ? entry.authorId : 'external',
             content: url,
             client: { user: { id: '' } },
             react: async () => {},
-            reply: async () => {},
-          } as unknown as Message;
+            // External/DB-discovered entries should not be treated as bot messages
+            isBot: false,
+          };
 
           const item: QueueItem = { message: syntheticMessage, url };
           if (entry) item.dbId = entry.id;
@@ -173,7 +172,7 @@ export class DocumentQueue {
    * Add URLs directly to the queue (used for crawl discovered URLs)
    * Checks for duplicates and skips URLs already in the queue
    */
-  async enqueueUrls(urls: string[], message: Message): Promise<void> {
+  async enqueueUrls(urls: string[], message: SyntheticMessage): Promise<void> {
     if (urls.length === 0) {
       return;
     }
@@ -222,7 +221,7 @@ export class DocumentQueue {
         url: item.url,
         sourceId: item.message.id,
         sourceContext: item.message.channelId,
-        authorId: item.message.author.id,
+        authorId: item.message.authorId,
       });
       item.dbId = entry.id;
       this.queue.push(item);
@@ -335,15 +334,17 @@ export class DocumentQueue {
         // Convert Discord Message to SyntheticMessage for ingestion
         // Note: We cast through unknown because Discord's Message type has more
         // specific types than SyntheticMessage, but they're runtime-compatible
-        const syntheticMessage = {
+        const syntheticMessage: SyntheticMessage = {
           id: item.message.id,
           channelId: item.message.channelId,
-          authorId: item.message.author.id,
+          authorId: item.message.authorId,
           content: item.message.content,
           client: item.message.client ? { user: item.message.client.user } : undefined,
           reactions: item.message.reactions,
-          react: item.message.react?.bind(item.message)
-        } as unknown as import("../interfaces/cli-types.js").SyntheticMessage;
+          react: item.message.react?.bind(item.message),
+          // Preserve isBot if present, otherwise default to false for queued items
+          isBot: typeof item.message.isBot === 'boolean' ? item.message.isBot : false,
+        };
         await this.options.ingestionService.ingestMessage(syntheticMessage, {
           urls: [item.url],
           currentIndex: 0,

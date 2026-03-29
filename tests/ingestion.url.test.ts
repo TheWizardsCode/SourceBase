@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractUrls } from "../src/ingestion/url.js";
+import { extractUrls } from "../src/cli/lib/ingestion/url.js";
 
 describe("extractUrls", () => {
   it("extracts unique URLs from message text", () => {

@@ -68,6 +68,8 @@ async function processSingleUrl(
       content: url,
       channelId: options.context?.channelId || "cli",
       authorId: options.context?.authorId || "cli-user",
+      // CLI-originated messages are not bot messages
+      isBot: false,
     };
 
     // Track the result

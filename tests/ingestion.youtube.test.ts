@@ -5,7 +5,7 @@ import {
   isYouTubeUrl,
   extractYouTubeVideoId,
   normalizeYouTubeUrl,
-} from "../src/ingestion/url.js";
+} from "../src/cli/lib/ingestion/url.js";
 
 describe("extractUrls", () => {
   it("extracts unique URLs from message text", () => {

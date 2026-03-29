@@ -1,11 +1,11 @@
-import type { Client, Message, TextChannel } from "discord.js";
 import type { Logger } from "../../logger.js";
 import type { LinkRepository } from "../../db/repository.js";
 import type { DocumentQueue } from "./queue.js";
 import { extractUrls } from "./url.js";
+import type { SyntheticMessage } from "../../../interfaces/cli-types.js";
 
 export interface StartupRecoveryOptions {
-  discordClient: Client;
+  discordClient: any; // Keep as any to avoid discord.js dependency in CLI code
   repository: LinkRepository;
   documentQueue: DocumentQueue;
   logger: Logger;
@@ -122,10 +122,10 @@ export class StartupRecoveryService {
    * so we need to reverse them to process oldest first.
    */
   private async fetchMessagesAfterCheckpoint(
-    channel: TextChannel,
+    channel: any,
     afterMessageId: string
-  ): Promise<Message[]> {
-    const allMessages: Message[] = [];
+  ): Promise<SyntheticMessage[]> {
+    const allMessages: SyntheticMessage[] = [];
     let lastMessageId: string | undefined;
 
     while (allMessages.length < this.maxMessages) {
@@ -156,8 +156,22 @@ export class StartupRecoveryService {
 
       // Convert Collection to array and reverse to get chronological order
       // Discord returns messages newest first, we want oldest first
+      // Convert Discord Message objects to SyntheticMessage objects
       const batchArray = Array.from(batch.values()).reverse();
-      allMessages.push(...batchArray);
+      for (const m of batchArray) {
+        const mm: any = m;
+        const synthetic: SyntheticMessage = {
+          id: mm.id,
+          channelId: (mm.channel && (mm.channel as any).id) || this.options.channelId,
+          authorId: mm.author?.id || "",
+          content: mm.content,
+          client: mm.client ? { user: { id: mm.client.user?.id || "" } } : undefined,
+          react: async (emoji: string) => { if (mm.react) return await mm.react(emoji); },
+          // Convert discord.js author.bot to the CLI-friendly isBot flag if available
+          isBot: typeof mm.author?.bot === 'boolean' ? !!mm.author.bot : undefined,
+        };
+        allMessages.push(synthetic);
+      }
 
       // Update the last message ID for the next batch
       // Get the newest message ID from this batch (which is the first in the Collection)
@@ -179,7 +193,7 @@ export class StartupRecoveryService {
    * Process messages and enqueue URLs into the document queue.
    * Messages are processed in chronological order (oldest first).
    */
-  private async processMessages(messages: Message[]): Promise<RecoveryResult> {
+  private async processMessages(messages: SyntheticMessage[]): Promise<RecoveryResult> {
     let urlsFound = 0;
     let urlsQueued = 0;
     let botMessagesSkipped = 0;
@@ -195,18 +209,18 @@ export class StartupRecoveryService {
     });
 
     // Filter and categorize messages
-    const validMessages: Message[] = [];
+    const validMessages: SyntheticMessage[] = [];
     
     for (const message of messages) {
-      if (message.author.bot) {
+      // Skip messages that appear to be from bots when possible
+      if (message.isBot) {
         botMessagesSkipped++;
-        this.options.logger.debug("Skipping bot message", {
+        this.options.logger.debug("Skipping bot message during recovery", {
           messageId: message.id,
-          authorId: message.author.id,
         });
         continue;
       }
-      
+
       const urls = extractUrls(message.content);
       if (urls.length === 0) {
         noUrlsSkipped++;
@@ -216,7 +230,7 @@ export class StartupRecoveryService {
         });
         continue;
       }
-      
+
       validMessages.push(message);
     }
 
@@ -241,7 +255,7 @@ export class StartupRecoveryService {
 
       this.options.logger.debug("Processing message for recovery", {
         messageId: message.id,
-        authorId: message.author.id,
+        authorId: message.authorId,
         urlCount: urls.length,
         urls,
         progress: `${i + 1}/${validMessages.length}`,

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import { YoutubeTranscript } from "youtube-transcript";
-import { YouTubeApiClient } from "../src/ingestion/youtube.js";
+import { YouTubeApiClient } from "../src/cli/lib/ingestion/youtube.js";
 import type { Logger } from "../src/logger.js";
 
 // Mock youtube-transcript

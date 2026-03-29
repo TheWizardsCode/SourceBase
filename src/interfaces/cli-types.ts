@@ -411,6 +411,8 @@ export interface SyntheticMessage {
   };
   /** Optional: React function for bot use */
   react?: (emoji: string) => Promise<void>;
+  /** Optional: Whether the original Discord message was sent by a bot */
+  isBot?: boolean;
 }
 
 // ============================================================================

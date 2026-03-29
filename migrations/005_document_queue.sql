@@ -1,10 +1,12 @@
 -- Create document queue table for persisting URLs across bot restarts
+-- Uses neutral column names (source_id, source_context, author_id) to support
+-- both Discord bot and CLI usage without Discord-specific naming
 CREATE TABLE IF NOT EXISTS document_queue (
   id SERIAL PRIMARY KEY,
   url VARCHAR(2048) NOT NULL,
-  discord_message_id VARCHAR(32) NOT NULL,
-  discord_channel_id VARCHAR(32) NOT NULL,
-  discord_author_id VARCHAR(32) NOT NULL,
+  source_id VARCHAR(64) NOT NULL,        -- Discord message ID or CLI-generated ID
+  source_context VARCHAR(64) NOT NULL,   -- Discord channel ID or "cli" for CLI usage
+  author_id VARCHAR(64) NOT NULL,        -- Discord user ID or "cli-user" for CLI usage
   status VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'processing', 'completed', 'failed'
   attempts INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
@@ -26,4 +28,4 @@ CREATE TRIGGER update_document_queue_updated_at
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Add comment explaining the table
-COMMENT ON TABLE document_queue IS 'Queue for URLs waiting to be processed by the document ingestion service';
+COMMENT ON TABLE document_queue IS 'Queue for URLs waiting to be processed by the document ingestion service. Supports both Discord bot and CLI contexts with neutral column names.';

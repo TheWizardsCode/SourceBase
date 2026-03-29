@@ -161,9 +161,88 @@ sb queue --verbose https://example.com
 - Outputs: `Queued: <url> (ID: <id>)` on success
 - Exit codes: 0 (success), 1 (error), 2 (invalid args)
 
-#### `sb search` - Search indexed content (coming soon)
+#### `sb search` - Search indexed content
 
-#### `sb stats` - Database statistics (coming soon)
+Search the database using semantic similarity:
+
+```bash
+# Basic search (table output)
+sb search "machine learning"
+
+# JSON output for programmatic use
+sb search --format json "neural networks"
+
+# Get just the URLs
+sb search --format urls-only "web development" | xargs -I {} curl {}
+
+# Limit results
+sb search --limit 10 "artificial intelligence"
+```
+
+**Features:**
+- Semantic search using vector embeddings
+- Results sorted by relevance
+- Exit codes: 0 (success), 1 (error), 2 (invalid args)
+
+#### `sb stats` - Database statistics
+
+Display statistics about the indexed content:
+
+```bash
+# Table output (default)
+sb stats
+
+# JSON output
+sb stats --format json
+```
+
+**Features:**
+- Total links count
+- Links with summaries, embeddings, content, transcripts
+- Recent activity (24h, 7d, 30d)
+- Exit codes: 0 (success), 1 (error), 2 (invalid args)
+
+### Progress Output Formats (add command)
+
+The `sb add` command supports multiple output formats for progress events:
+
+```bash
+# Console format (human-friendly, default in TTY)
+sb add https://example.com/article
+
+# NDJSON format (one JSON line per event, ideal for automation)
+sb add --format ndjson https://example.com/article
+sb add --ndjson https://example.com/article  # shorthand
+
+# Webhook format (POSTs events to URL)
+sb add --format webhook --webhook-url https://example.com/hook https://example.com/article
+```
+
+**NDJSON Output Example:**
+```bash
+$ sb add --ndjson https://example.com/article
+{"type":"progress","phase":"downloading","url":"https://example.com/article","current":1,"total":1,"timestamp":"2026-03-29T12:00:00.000Z"}
+{"type":"progress","phase":"extracting_links","url":"https://example.com/article","current":1,"total":1,"timestamp":"2026-03-29T12:00:01.000Z"}
+{"type":"progress","phase":"summarizing","url":"https://example.com/article","current":1,"total":1,"chunkCurrent":1,"chunkTotal":3,"timestamp":"2026-03-29T12:00:02.000Z"}
+{"type":"progress","phase":"completed","url":"https://example.com/article","current":1,"total":1,"title":"Example Article","summary":"This is a summary...","timestamp":"2026-03-29T12:00:05.000Z"}
+```
+
+**Webhook Events:**
+When using `--format webhook`, each progress event is POSTed as JSON to the provided URL. The webhook receives the same JSON structure as NDJSON output.
+
+### Context Flags for Bot Integration
+
+When the Discord bot invokes the CLI, it passes context via flags:
+
+```bash
+sb add \
+  --channel-id "123456789" \
+  --message-id "987654321" \
+  --author-id "111222333" \
+  https://example.com/article
+```
+
+These flags associate the operation with Discord entities but are optional for standalone CLI usage.
 
 ### Global Options
 
@@ -174,11 +253,21 @@ All commands support:
 
 ### Environment Requirements
 
-CLI commands require the same environment variables as the bot:
-- `DATABASE_URL` - PostgreSQL connection string (required)
-- `LLM_BASE_URL` - LLM API endpoint (required for `add`)
-- `LLM_MODEL` - Model name (required for `add`)
-- `DISCORD_CHANNEL_ID` - Channel for notifications (required for `queue`)
+CLI commands operate independently of Discord and require only:
+
+**Required:**
+- `DATABASE_URL` - PostgreSQL connection string
+
+**Required for `add` command:**
+- `LLM_BASE_URL` - LLM API endpoint (e.g., `http://localhost:11434/v1`)
+- `LLM_MODEL` - Model name (e.g., `gpt-4o-mini`)
+
+**Optional:**
+- `LLM_EMBEDDING_MODEL` - Separate model for embeddings
+- `YOUTUBE_API_KEY` - For YouTube metadata extraction
+- `LOG_LEVEL` - Control verbosity (`debug`, `info`, `warn`, `error`)
+
+**Note:** The CLI does NOT require `DISCORD_BOT_TOKEN` or `DISCORD_CHANNEL_ID`. These are bot-only variables.
 
 ## YouTube Ingestion
 

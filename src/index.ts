@@ -1,9 +1,9 @@
-import { Client, Intents, TextChannel, type Message } from "discord.js";
+import { Client, Intents, TextChannel, ThreadChannel, type Message } from "discord.js";
 import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
 import { isLikelyContentQuery } from "./query/detector.js";
-import { runAddCommand, runQueueCommand } from "./bot/cli-runner.js";
+import { runAddCommand, runQueueCommand, type AddProgressEvent } from "./bot/cli-runner.js";
 
 // ============================================================================
 // Logger
@@ -15,9 +15,39 @@ const logger = new Logger(config.LOG_LEVEL as any);
 // Progress Message Formatting
 // ============================================================================
 
-// Note: URL processing via CLI subprocess has been removed as part of CLI extraction.
-// The CLI is now maintained in the openBrain repository.
-// Bot functionality is currently limited to Discord integration.
+/**
+ * Format a CLI progress event into a user-friendly Discord message
+ */
+function formatProgressMessage(event: AddProgressEvent): string {
+  switch (event.phase) {
+    case "downloading":
+      return "⏳ Downloading content...";
+    case "extracting":
+      return "📝 Extracting text content...";
+    case "embedding":
+      return "🧠 Generating embeddings...";
+    case "completed":
+      return `✅ Added to OpenBrain: ${event.title || "URL processed"}`;
+    case "failed":
+      return `❌ Failed: ${event.message || "Unknown error"}`;
+    default:
+      return `⏳ Processing: ${event.phase}`;
+  }
+}
+
+/**
+ * Format thread name for URL processing
+ */
+function formatThreadName(url: string): string {
+  // Extract domain from URL for thread name
+  try {
+    const urlObj = new URL(url);
+    const domain = urlObj.hostname.replace(/^www\./, "");
+    return `Processing: ${domain}`;
+  } catch {
+    return "Processing URL";
+  }
+}
 
 // ============================================================================
 // URL Processing
@@ -48,6 +78,114 @@ function extractCrawlSeedUrl(content: string): string | null {
 }
 
 
+
+/**
+ * Process a URL with threaded progress updates
+ * Creates a thread and sends progress events as they occur
+ */
+async function processUrlWithProgress(
+  message: Message,
+  url: string
+): Promise<void> {
+  let thread: ThreadChannel | null = null;
+  
+  try {
+    // Try to create a thread for progress updates
+    thread = await message.startThread({
+      name: formatThreadName(url),
+      autoArchiveDuration: 60, // Archive after 1 hour of inactivity
+    });
+    
+    logger.debug("Created thread for URL processing", {
+      messageId: message.id,
+      threadId: thread.id,
+      url,
+    });
+  } catch (error) {
+    // Thread creation failed, log and continue without thread
+    logger.warn("Failed to create thread for progress updates", {
+      messageId: message.id,
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  
+  // Run the add command with progress tracking
+  const addGenerator = runAddCommand(url, {
+    channelId: message.channelId,
+    messageId: message.id,
+    authorId: message.author.id,
+  });
+  
+  let lastPhase: string | null = null;
+  
+  // Process progress events
+  for await (const event of addGenerator) {
+    // Only send update if phase changed (avoid spam)
+    if (event.phase !== lastPhase) {
+      lastPhase = event.phase;
+      
+      const progressMsg = formatProgressMessage(event);
+      
+      if (thread) {
+        try {
+          await thread.send(progressMsg);
+        } catch (error) {
+          logger.warn("Failed to send progress update to thread", {
+            threadId: thread.id,
+            phase: event.phase,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+  }
+  
+  // Get final result
+  const result = await addGenerator.next();
+  
+  if (result.done && result.value) {
+    const finalResult = result.value;
+    
+    if (finalResult.success) {
+      const successMsg = `✅ Added: ${finalResult.title || url}`;
+      
+      if (thread) {
+        try {
+          await thread.send(successMsg);
+          // Archive the thread after successful completion
+          await thread.setArchived(true);
+        } catch (error) {
+          logger.warn("Failed to send final success message to thread", {
+            threadId: thread.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } else {
+        // Fallback to message reply if no thread
+        await message.reply(`Added URL: \`${url}\``);
+      }
+    } else {
+      const errorMsg = `❌ Failed to add URL <${url}>\n\n${finalResult.error || "CLI not available"}`;
+      
+      if (thread) {
+        try {
+          await thread.send(errorMsg);
+          // Archive the thread after failure
+          await thread.setArchived(true);
+        } catch (error) {
+          logger.warn("Failed to send final error message to thread", {
+            threadId: thread.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } else {
+        // Fallback to message reply if no thread
+        await message.reply(errorMsg);
+      }
+    }
+  }
+}
 
 /**
  * Suppress embeds on a message if the bot has the MANAGE_MESSAGES permission.
@@ -160,31 +298,9 @@ const bot = new DiscordBot({
       // Attempt to suppress embeds on the original message if permitted.
       await suppressEmbedsIfPermitted(message);
 
-      // Add URLs using CLI runner (best-effort)
+      // Add URLs using CLI runner with threaded progress updates
       for (const url of urls) {
-        const addGenerator = runAddCommand(url, {
-          channelId: message.channelId,
-          messageId: message.id,
-          authorId: message.author.id,
-        });
-        
-        // Consume all progress events to get final result
-        let addResult = await addGenerator.next();
-        while (!addResult.done) {
-          // Progress events are available here if needed for future enhancements
-          addResult = await addGenerator.next();
-        }
-        
-        const result = addResult.value;
-        
-        if (result.success) {
-          // Wrap the URL in backticks to avoid creating an embed in the bot reply
-          await message.reply(`Added URL: \`${url}\``);
-        } else {
-          // If CLI isn't available, inform the user once. Wrap URL and add a blank line
-          // before the error to avoid Discord auto-embedding the URL.
-          await message.reply(`Could not add URL <${url}>\n\n${result.error || "CLI not available"}`);
-        }
+        await processUrlWithProgress(message, url);
       }
     }
   }

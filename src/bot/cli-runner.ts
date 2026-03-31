@@ -32,6 +32,7 @@
 
 import { spawn, type ChildProcess } from "child_process";
 import { createInterface } from "readline";
+import path from "path";
 
 // ============================================================================
 // Type Definitions
@@ -239,8 +240,9 @@ export class CliRunnerError extends Error {
 // Configuration
 // ============================================================================
 
-/** Path to the sb CLI binary */
-const SB_CLI_PATH = process.env.SB_CLI_PATH || "sb";
+/** Path to the sb CLI binary - prefer local build over global */
+const SB_CLI_PATH = process.env.SB_CLI_PATH || 
+  path.resolve(process.cwd(), 'dist/src/cli/index.js');
 
 /** Default timeout for CLI commands (5 minutes) */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;

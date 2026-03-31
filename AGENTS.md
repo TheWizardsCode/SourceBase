@@ -82,6 +82,14 @@ The agent(s) will then plan and execute the work required to meet those goals by
 
 Follow the global AGENTS.md in addition to the rules below. The local rules below take priority in the event of a conflict.
 
+You are building a Discord Bot that will help users manage content in an "OpenBrain" instance (see 'ob --help').
+
+You will reference best practices for building Dicord Bots using https://discord.js.org/docs.
+
+Your project scope is limited to the creation of discord bot commands and behaviours. All management of content should be via the 'openbrain' (use the alias 'ob') command.
+
+When you need to do anything outside the scope of your project (for example, request a new feature in OpenBrain) you will provide a feature request document for the PM to pass to the appropriate team.
+
 <!-- Start base Worklog AGENTS.md file -->
 
 ## work-item Tracking with Worklog (wl)

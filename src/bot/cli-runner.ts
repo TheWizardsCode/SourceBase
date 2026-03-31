@@ -389,6 +389,11 @@ function runCliSubprocess(
  * }
  * ```
  */
+/**
+ * Extended progress event that includes the final result
+ */
+export type AddProgressEventWithResult = AddProgressEvent | (AddResult & { phase: "__result__" });
+
 export async function* runAddCommand(
   url: string,
   options: RunnerOptions = {}
@@ -417,41 +422,46 @@ export async function* runAddCommand(
     const { exitCode, stderr } = await exitPromise;
 
     if (exitCode !== 0) {
-      return {
+      const result: AddResult = {
         success: false,
         url,
         error: stderr.trim() || `CLI exited with code ${exitCode}`,
       };
+      return result;
     }
 
     // Determine result from last event
     if (lastEvent?.phase === "completed") {
-      return {
+      const result: AddResult = {
         success: true,
         url,
         title: lastEvent.title,
       };
+      return result;
     } else if (lastEvent?.phase === "failed") {
-      return {
+      const result: AddResult = {
         success: false,
         url,
         error: lastEvent.message || "Unknown error during ingestion",
       };
+      return result;
     }
 
     // No events received - check stderr
-    return {
+    const result: AddResult = {
       success: false,
       url,
       error: stderr.trim() || "No progress events received",
     };
+    return result;
   } catch (error) {
     if (error instanceof CliRunnerError) {
-      return {
+      const result: AddResult = {
         success: false,
         url,
         error: error.message,
       };
+      return result;
     }
     throw error;
   }

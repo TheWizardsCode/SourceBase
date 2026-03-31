@@ -3,7 +3,7 @@ import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
 import { isLikelyContentQuery } from "./query/detector.js";
-import { runAddCommand, runQueueCommand, isCliAvailable, CliRunnerError, type AddProgressEvent } from "./bot/cli-runner.js";
+import { runAddCommand, runQueueCommand, isCliAvailable, CliRunnerError, type AddProgressEvent, type AddResult } from "./bot/cli-runner.js";
 
 // ============================================================================
 // Logger
@@ -213,11 +213,28 @@ async function processUrlWithProgress(
     
     let lastPhase: string | null = null;
     let eventCount = 0;
+    let finalResult: AddResult | undefined;
     
-    // Process progress events
+    // Process progress events using manual iteration to capture return value
     logger.info("Waiting for CLI progress events...", { messageId: message.id, url });
     
-    for await (const event of addGenerator) {
+    while (true) {
+      const iteration = await addGenerator.next();
+      
+      if (iteration.done) {
+        // Generator completed - capture the return value
+        finalResult = iteration.value;
+        logger.info("CLI generator completed", { 
+          messageId: message.id, 
+          url, 
+          eventCount,
+          hasResult: !!finalResult 
+        });
+        break;
+      }
+      
+      // Process yielded progress event
+      const event = iteration.value;
       eventCount++;
       logger.info("Received CLI progress event", { 
         messageId: message.id, 
@@ -246,14 +263,7 @@ async function processUrlWithProgress(
       }
     }
     
-    logger.info("CLI generator completed", { messageId: message.id, url, eventCount });
-    
-    // Get final result
-    const result = await addGenerator.next();
-    
-    if (result.done && result.value) {
-      const finalResult = result.value;
-      
+    if (finalResult) {
       logger.info("CLI processing complete", { 
         messageId: message.id, 
         url, 
@@ -308,10 +318,9 @@ async function processUrlWithProgress(
         }
       }
     } else {
-      logger.error("CLI generator did not return expected result", { 
+      logger.error("CLI generator did not return a result", { 
         messageId: message.id, 
-        url,
-        done: result.done 
+        url
       });
     }
   } catch (error) {

@@ -3,7 +3,7 @@ import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
 import { isLikelyContentQuery } from "./query/detector.js";
-import { runAddCommand, runQueueCommand, type AddProgressEvent } from "./bot/cli-runner.js";
+import { runAddCommand, runQueueCommand, isCliAvailable, CliRunnerError, type AddProgressEvent } from "./bot/cli-runner.js";
 
 // ============================================================================
 // Logger
@@ -47,6 +47,30 @@ function formatThreadName(url: string): string {
   } catch {
     return "Processing URL";
   }
+}
+
+/**
+ * User-facing error message for CLI unavailability
+ */
+const CLI_UNAVAILABLE_MESSAGE = "⚠️ OpenBrain CLI is not available. Please ensure the CLI is installed and accessible on PATH.";
+
+/**
+ * Check if CLI is available and reply with error message if not
+ * @returns true if CLI is available, false otherwise
+ */
+async function checkCliAvailability(message: Message): Promise<boolean> {
+  const isAvailable = await isCliAvailable();
+  
+  if (!isAvailable) {
+    logger.warn("CLI availability check failed", {
+      messageId: message.id,
+      channelId: message.channelId,
+    });
+    await message.reply(CLI_UNAVAILABLE_MESSAGE);
+    return false;
+  }
+  
+  return true;
 }
 
 // ============================================================================
@@ -110,79 +134,110 @@ async function processUrlWithProgress(
     });
   }
   
-  // Run the add command with progress tracking
-  const addGenerator = runAddCommand(url, {
-    channelId: message.channelId,
-    messageId: message.id,
-    authorId: message.author.id,
-  });
-  
-  let lastPhase: string | null = null;
-  
-  // Process progress events
-  for await (const event of addGenerator) {
-    // Only send update if phase changed (avoid spam)
-    if (event.phase !== lastPhase) {
-      lastPhase = event.phase;
-      
-      const progressMsg = formatProgressMessage(event);
-      
-      if (thread) {
-        try {
-          await thread.send(progressMsg);
-        } catch (error) {
-          logger.warn("Failed to send progress update to thread", {
-            threadId: thread.id,
-            phase: event.phase,
-            error: error instanceof Error ? error.message : String(error),
-          });
+  try {
+    // Run the add command with progress tracking
+    const addGenerator = runAddCommand(url, {
+      channelId: message.channelId,
+      messageId: message.id,
+      authorId: message.author.id,
+    });
+    
+    let lastPhase: string | null = null;
+    
+    // Process progress events
+    for await (const event of addGenerator) {
+      // Only send update if phase changed (avoid spam)
+      if (event.phase !== lastPhase) {
+        lastPhase = event.phase;
+        
+        const progressMsg = formatProgressMessage(event);
+        
+        if (thread) {
+          try {
+            await thread.send(progressMsg);
+          } catch (error) {
+            logger.warn("Failed to send progress update to thread", {
+              threadId: thread.id,
+              phase: event.phase,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
       }
     }
-  }
-  
-  // Get final result
-  const result = await addGenerator.next();
-  
-  if (result.done && result.value) {
-    const finalResult = result.value;
     
-    if (finalResult.success) {
-      const successMsg = `✅ Added: ${finalResult.title || url}`;
+    // Get final result
+    const result = await addGenerator.next();
+    
+    if (result.done && result.value) {
+      const finalResult = result.value;
       
-      if (thread) {
-        try {
-          await thread.send(successMsg);
-          // Archive the thread after successful completion
-          await thread.setArchived(true);
-        } catch (error) {
-          logger.warn("Failed to send final success message to thread", {
-            threadId: thread.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
+      if (finalResult.success) {
+        const successMsg = `✅ Added: ${finalResult.title || url}`;
+        
+        if (thread) {
+          try {
+            await thread.send(successMsg);
+            // Archive the thread after successful completion
+            await thread.setArchived(true);
+          } catch (error) {
+            logger.warn("Failed to send final success message to thread", {
+              threadId: thread.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } else {
+          // Fallback to message reply if no thread
+          await message.reply(`Added URL: \`${url}\``);
         }
       } else {
-        // Fallback to message reply if no thread
-        await message.reply(`Added URL: \`${url}\``);
+        const errorMsg = `❌ Failed to add URL\n\n${finalResult.error || CLI_UNAVAILABLE_MESSAGE}`;
+        
+        if (thread) {
+          try {
+            await thread.send(errorMsg);
+            // Archive the thread after failure
+            await thread.setArchived(true);
+          } catch (error) {
+            logger.warn("Failed to send final error message to thread", {
+              threadId: thread.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } else {
+          // Fallback to message reply if no thread
+          await message.reply(errorMsg);
+        }
       }
-    } else {
-      const errorMsg = `❌ Failed to add URL <${url}>\n\n${finalResult.error || "CLI not available"}`;
+    }
+  } catch (error) {
+    // Handle CLI errors
+    if (error instanceof CliRunnerError) {
+      logger.error("CLI error during URL processing", {
+        messageId: message.id,
+        url,
+        exitCode: error.exitCode,
+        stderr: error.stderr,
+      });
+      
+      const errorMsg = `❌ Failed to add URL\n\n${CLI_UNAVAILABLE_MESSAGE}`;
       
       if (thread) {
         try {
           await thread.send(errorMsg);
-          // Archive the thread after failure
           await thread.setArchived(true);
-        } catch (error) {
-          logger.warn("Failed to send final error message to thread", {
+        } catch (sendError) {
+          logger.error("Failed to send CLI error message to thread", {
             threadId: thread.id,
-            error: error instanceof Error ? error.message : String(error),
+            error: sendError instanceof Error ? sendError.message : String(sendError),
           });
         }
       } else {
-        // Fallback to message reply if no thread
         await message.reply(errorMsg);
       }
+    } else {
+      // Re-throw unexpected errors
+      throw error;
     }
   }
 }
@@ -272,20 +327,39 @@ const bot = new DiscordBot({
         return;
       }
 
-      // Try to queue via CLI runner
-      const queueResult = await runQueueCommand(seed, {
-        channelId: message.channelId,
-        messageId: message.id,
-        authorId: message.author.id,
-      });
+      // Check CLI availability before queueing
+      if (!(await checkCliAvailability(message))) {
+        return;
+      }
       
-      if (queueResult.success) {
-        // Wrap in code ticks to avoid Discord creating an embed in the reply
-        await message.reply(`Queued URL for crawling: \`${seed}\``);
-      } else {
-        // Wrap the URL in angle brackets to prevent Discord creating embeds,
-        // and leave a blank line before the echoed error message.
-        await message.reply(`Failed to queue URL <${seed}>\n\n${queueResult.error || "CLI not available"}`);
+      // Try to queue via CLI runner
+      try {
+        const queueResult = await runQueueCommand(seed, {
+          channelId: message.channelId,
+          messageId: message.id,
+          authorId: message.author.id,
+        });
+        
+        if (queueResult.success) {
+          // Wrap in code ticks to avoid Discord creating an embed in the reply
+          await message.reply(`Queued URL for crawling: \`${seed}\``);
+        } else {
+          // Wrap the URL in angle brackets to prevent Discord creating embeds,
+          // and leave a blank line before the echoed error message.
+          await message.reply(`Failed to queue URL\n\n${queueResult.error || CLI_UNAVAILABLE_MESSAGE}`);
+        }
+      } catch (error) {
+        if (error instanceof CliRunnerError) {
+          logger.error("CLI error during queue command", {
+            messageId: message.id,
+            url: seed,
+            exitCode: error.exitCode,
+            stderr: error.stderr,
+          });
+          await message.reply(`❌ Failed to queue URL\n\n${CLI_UNAVAILABLE_MESSAGE}`);
+        } else {
+          throw error;
+        }
       }
 
       return;
@@ -298,6 +372,11 @@ const bot = new DiscordBot({
       // Attempt to suppress embeds on the original message if permitted.
       await suppressEmbedsIfPermitted(message);
 
+      // Check CLI availability before processing URLs
+      if (!(await checkCliAvailability(message))) {
+        return;
+      }
+      
       // Add URLs using CLI runner with threaded progress updates
       for (const url of urls) {
         await processUrlWithProgress(message, url);

@@ -1,9 +1,9 @@
 import { Client, Intents, TextChannel, type Message } from "discord.js";
-import { execFile } from "child_process";
 import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
 import { isLikelyContentQuery } from "./query/detector.js";
+import { runAddCommand, runQueueCommand } from "./bot/cli-runner.js";
 
 // ============================================================================
 // Logger
@@ -47,73 +47,7 @@ function extractCrawlSeedUrl(content: string): string | null {
   return match ? match[1] : null;
 }
 
-/**
- * Run the OpenBrain CLI with a set of args.
- * Tries a couple of common binary names if OPENBRAIN_CLI_PATH isn't set.
- */
-async function runOpenBrainCommand(args: string[]) {
-  const tried = [process.env.OPENBRAIN_CLI_PATH || "OpenBrain", "openbrain"];
 
-  for (const cmd of tried) {
-    try {
-      const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        execFile(cmd, args, { encoding: "utf8" }, (err, stdout, stderr) => {
-          if (err) return reject({ err, stdout: stdout ?? "", stderr: stderr ?? "" });
-          resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
-        });
-      });
-
-      logger.info("OpenBrain command succeeded", { cmd, args, stdout });
-      return { success: true, stdout, stderr, command: cmd };
-    } catch (e: any) {
-      const err = e?.err ?? null;
-      const stdout = e?.stdout ?? "";
-      const stderr = e?.stderr ?? "";
-
-      // If the binary isn't found try the next candidate
-      if (err && err.code === "ENOENT") {
-        logger.debug("OpenBrain binary not found, trying next", { cmd });
-        continue;
-      }
-
-      // Other errors are terminal for this invocation
-      const message = err && err.message ? err.message : String(e);
-      logger.error("OpenBrain command failed", { cmd, args, message, stdout, stderr });
-      return { success: false, error: message, stdout, stderr, command: cmd };
-    }
-  }
-
-  const triedList = tried.join(", ");
-  const msg = `OpenBrain CLI not found on PATH. Tried: ${triedList}`;
-  logger.error(msg);
-  return { success: false, error: msg, stdout: "", stderr: "", command: tried[0] };
-}
-
-async function addUrlToOpenBrain(url: string, message: Message) {
-  const tags = ["--tag", "source:discord", "--tag", `channel:${message.channelId}`];
-  const args: string[] = [];
-  if ((config.LOG_LEVEL as string) === "debug") {
-    args.push("--verbose");
-  }
-  args.push("add");
-  args.push(...tags);
-  args.push(url);
-
-  return await runOpenBrainCommand(args);
-}
-
-async function queueUrlWithOpenBrain(url: string, message: Message) {
-  const tags = ["--tag", "source:discord", "--tag", `channel:${message.channelId}`];
-  const args: string[] = [];
-  if ((config.LOG_LEVEL as string) === "debug") {
-    args.push("--verbose");
-  }
-  args.push("queue");
-  args.push(...tags);
-  args.push(url);
-
-  return await runOpenBrainCommand(args);
-}
 
 /**
  * Suppress embeds on a message if the bot has the MANAGE_MESSAGES permission.
@@ -200,15 +134,20 @@ const bot = new DiscordBot({
         return;
       }
 
-      // Try to queue via OpenBrain CLI first
-      const queued = await queueUrlWithOpenBrain(seed, message);
-      if (queued.success) {
+      // Try to queue via CLI runner
+      const queueResult = await runQueueCommand(seed, {
+        channelId: message.channelId,
+        messageId: message.id,
+        authorId: message.author.id,
+      });
+      
+      if (queueResult.success) {
         // Wrap in code ticks to avoid Discord creating an embed in the reply
         await message.reply(`Queued URL for crawling: \`${seed}\``);
       } else {
         // Wrap the URL in angle brackets to prevent Discord creating embeds,
         // and leave a blank line before the echoed error message.
-        await message.reply(`Failed to queue URL <${seed}>\n\n${queued.error || "OpenBrain CLI not available"}`);
+        await message.reply(`Failed to queue URL <${seed}>\n\n${queueResult.error || "CLI not available"}`);
       }
 
       return;
@@ -221,16 +160,30 @@ const bot = new DiscordBot({
       // Attempt to suppress embeds on the original message if permitted.
       await suppressEmbedsIfPermitted(message);
 
-      // Add URLs to OpenBrain (best-effort)
+      // Add URLs using CLI runner (best-effort)
       for (const url of urls) {
-        const res = await addUrlToOpenBrain(url, message);
-        if (res.success) {
+        const addGenerator = runAddCommand(url, {
+          channelId: message.channelId,
+          messageId: message.id,
+          authorId: message.author.id,
+        });
+        
+        // Consume all progress events to get final result
+        let addResult = await addGenerator.next();
+        while (!addResult.done) {
+          // Progress events are available here if needed for future enhancements
+          addResult = await addGenerator.next();
+        }
+        
+        const result = addResult.value;
+        
+        if (result.success) {
           // Wrap the URL in backticks to avoid creating an embed in the bot reply
-          await message.reply(`Added URL to OpenBrain: \`${url}\``);
+          await message.reply(`Added URL: \`${url}\``);
         } else {
           // If CLI isn't available, inform the user once. Wrap URL and add a blank line
           // before the error to avoid Discord auto-embedding the URL.
-          await message.reply(`Could not add URL <${url}>\n\n${res.error || "OpenBrain CLI not available"}`);
+          await message.reply(`Could not add URL <${url}>\n\n${result.error || "CLI not available"}`);
         }
       }
     }

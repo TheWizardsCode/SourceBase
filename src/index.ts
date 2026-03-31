@@ -104,18 +104,35 @@ async function removeReaction(message: Message, emoji: string): Promise<void> {
  * @returns true if CLI is available, false otherwise
  */
 async function checkCliAvailability(message: Message): Promise<boolean> {
-  const isAvailable = await isCliAvailable();
+  logger.debug("Checking CLI availability...", { messageId: message.id });
   
-  if (!isAvailable) {
-    logger.warn("CLI availability check failed", {
+  try {
+    const isAvailable = await Promise.race([
+      isCliAvailable(),
+      new Promise<boolean>((_, reject) => 
+        setTimeout(() => reject(new Error("CLI check timeout")), 10000)
+      )
+    ]);
+    
+    if (!isAvailable) {
+      logger.warn("CLI availability check failed - CLI not found", {
+        messageId: message.id,
+        channelId: message.channelId,
+      });
+      await message.reply(CLI_UNAVAILABLE_MESSAGE);
+      return false;
+    }
+    
+    logger.debug("CLI is available", { messageId: message.id });
+    return true;
+  } catch (error) {
+    logger.error("CLI availability check error", {
       messageId: message.id,
-      channelId: message.channelId,
+      error: error instanceof Error ? error.message : String(error),
     });
     await message.reply(CLI_UNAVAILABLE_MESSAGE);
     return false;
   }
-  
-  return true;
 }
 
 // ============================================================================
@@ -156,6 +173,8 @@ async function processUrlWithProgress(
   message: Message,
   url: string
 ): Promise<void> {
+  logger.info("Starting URL processing", { messageId: message.id, url });
+  
   let thread: ThreadChannel | null = null;
   
   // Add processing reaction to indicate the bot is working
@@ -168,7 +187,7 @@ async function processUrlWithProgress(
       autoArchiveDuration: 60, // Archive after 1 hour of inactivity
     });
     
-    logger.debug("Created thread for URL processing", {
+    logger.info("Created thread for URL processing", {
       messageId: message.id,
       threadId: thread.id,
       url,
@@ -183,6 +202,8 @@ async function processUrlWithProgress(
   }
   
   try {
+    logger.info("Starting CLI add command", { messageId: message.id, url });
+    
     // Run the add command with progress tracking
     const addGenerator = runAddCommand(url, {
       channelId: message.channelId,
@@ -191,9 +212,20 @@ async function processUrlWithProgress(
     });
     
     let lastPhase: string | null = null;
+    let eventCount = 0;
     
     // Process progress events
+    logger.info("Waiting for CLI progress events...", { messageId: message.id, url });
+    
     for await (const event of addGenerator) {
+      eventCount++;
+      logger.info("Received CLI progress event", { 
+        messageId: message.id, 
+        url, 
+        phase: event.phase,
+        eventCount 
+      });
+      
       // Only send update if phase changed (avoid spam)
       if (event.phase !== lastPhase) {
         lastPhase = event.phase;
@@ -214,11 +246,21 @@ async function processUrlWithProgress(
       }
     }
     
+    logger.info("CLI generator completed", { messageId: message.id, url, eventCount });
+    
     // Get final result
     const result = await addGenerator.next();
     
     if (result.done && result.value) {
       const finalResult = result.value;
+      
+      logger.info("CLI processing complete", { 
+        messageId: message.id, 
+        url, 
+        success: finalResult.success,
+        title: finalResult.title,
+        error: finalResult.error
+      });
       
       if (finalResult.success) {
         // Remove processing reaction and add success reaction
@@ -265,8 +307,20 @@ async function processUrlWithProgress(
           await message.reply(errorMsg);
         }
       }
+    } else {
+      logger.error("CLI generator did not return expected result", { 
+        messageId: message.id, 
+        url,
+        done: result.done 
+      });
     }
   } catch (error) {
+    logger.error("Exception during URL processing", {
+      messageId: message.id,
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    
     // Handle CLI errors
     if (error instanceof CliRunnerError) {
       logger.error("CLI error during URL processing", {
@@ -275,32 +329,26 @@ async function processUrlWithProgress(
         exitCode: error.exitCode,
         stderr: error.stderr,
       });
-      
-      // Remove processing reaction and add failure reaction
-      await removeReaction(message, PROCESSING_REACTION);
-      await addReaction(message, FAILURE_REACTION);
-      
-      const errorMsg = `❌ Failed to add URL\n\n${CLI_UNAVAILABLE_MESSAGE}`;
-      
-      if (thread) {
-        try {
-          await thread.send(errorMsg);
-          await thread.setArchived(true);
-        } catch (sendError) {
-          logger.error("Failed to send CLI error message to thread", {
-            threadId: thread.id,
-            error: sendError instanceof Error ? sendError.message : String(sendError),
-          });
-        }
-      } else {
-        await message.reply(errorMsg);
+    }
+    
+    // Remove processing reaction and add failure reaction
+    await removeReaction(message, PROCESSING_REACTION);
+    await addReaction(message, FAILURE_REACTION);
+    
+    const errorMsg = `❌ Failed to add URL\n\n${CLI_UNAVAILABLE_MESSAGE}`;
+    
+    if (thread) {
+      try {
+        await thread.send(errorMsg);
+        await thread.setArchived(true);
+      } catch (sendError) {
+        logger.error("Failed to send error message to thread", {
+          threadId: thread.id,
+          error: sendError instanceof Error ? sendError.message : String(sendError),
+        });
       }
     } else {
-      // Remove processing reaction on unexpected error
-      await removeReaction(message, PROCESSING_REACTION);
-      await addReaction(message, FAILURE_REACTION);
-      // Re-throw unexpected errors
-      throw error;
+      await message.reply(errorMsg);
     }
   }
 }

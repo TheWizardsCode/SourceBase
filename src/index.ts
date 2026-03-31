@@ -54,6 +54,51 @@ function formatThreadName(url: string): string {
  */
 const CLI_UNAVAILABLE_MESSAGE = "⚠️ OpenBrain CLI is not available. Please ensure the CLI is installed and accessible on PATH.";
 
+// ============================================================================
+// Message Reactions
+// ============================================================================
+
+const PROCESSING_REACTION = "👀";
+const SUCCESS_REACTION = "✅";
+const FAILURE_REACTION = "⚠️";
+
+/**
+ * Add a reaction to a message
+ */
+async function addReaction(message: Message, emoji: string): Promise<void> {
+  try {
+    await message.react(emoji);
+  } catch (error) {
+    logger.warn("Failed to add reaction", {
+      messageId: message.id,
+      emoji,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Remove a reaction from a message (removes bot's reaction only)
+ */
+async function removeReaction(message: Message, emoji: string): Promise<void> {
+  try {
+    const botUserId = message.client?.user?.id;
+    if (!botUserId) return;
+
+    // Get the reaction and remove the bot's reaction
+    const reaction = message.reactions.cache.get(emoji);
+    if (reaction) {
+      await reaction.users.remove(botUserId);
+    }
+  } catch (error) {
+    logger.warn("Failed to remove reaction", {
+      messageId: message.id,
+      emoji,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /**
  * Check if CLI is available and reply with error message if not
  * @returns true if CLI is available, false otherwise
@@ -112,6 +157,9 @@ async function processUrlWithProgress(
   url: string
 ): Promise<void> {
   let thread: ThreadChannel | null = null;
+  
+  // Add processing reaction to indicate the bot is working
+  await addReaction(message, PROCESSING_REACTION);
   
   try {
     // Try to create a thread for progress updates
@@ -173,6 +221,10 @@ async function processUrlWithProgress(
       const finalResult = result.value;
       
       if (finalResult.success) {
+        // Remove processing reaction and add success reaction
+        await removeReaction(message, PROCESSING_REACTION);
+        await addReaction(message, SUCCESS_REACTION);
+        
         const successMsg = `✅ Added: ${finalResult.title || url}`;
         
         if (thread) {
@@ -191,6 +243,10 @@ async function processUrlWithProgress(
           await message.reply(`Added URL: \`${url}\``);
         }
       } else {
+        // Remove processing reaction and add failure reaction
+        await removeReaction(message, PROCESSING_REACTION);
+        await addReaction(message, FAILURE_REACTION);
+        
         const errorMsg = `❌ Failed to add URL\n\n${finalResult.error || CLI_UNAVAILABLE_MESSAGE}`;
         
         if (thread) {
@@ -220,6 +276,10 @@ async function processUrlWithProgress(
         stderr: error.stderr,
       });
       
+      // Remove processing reaction and add failure reaction
+      await removeReaction(message, PROCESSING_REACTION);
+      await addReaction(message, FAILURE_REACTION);
+      
       const errorMsg = `❌ Failed to add URL\n\n${CLI_UNAVAILABLE_MESSAGE}`;
       
       if (thread) {
@@ -236,6 +296,9 @@ async function processUrlWithProgress(
         await message.reply(errorMsg);
       }
     } else {
+      // Remove processing reaction on unexpected error
+      await removeReaction(message, PROCESSING_REACTION);
+      await addReaction(message, FAILURE_REACTION);
       // Re-throw unexpected errors
       throw error;
     }
@@ -332,6 +395,9 @@ const bot = new DiscordBot({
         return;
       }
       
+      // Add processing reaction
+      await addReaction(message, PROCESSING_REACTION);
+      
       // Try to queue via CLI runner
       try {
         const queueResult = await runQueueCommand(seed, {
@@ -341,14 +407,26 @@ const bot = new DiscordBot({
         });
         
         if (queueResult.success) {
+          // Remove processing reaction and add success reaction
+          await removeReaction(message, PROCESSING_REACTION);
+          await addReaction(message, SUCCESS_REACTION);
+          
           // Wrap in code ticks to avoid Discord creating an embed in the reply
           await message.reply(`Queued URL for crawling: \`${seed}\``);
         } else {
+          // Remove processing reaction and add failure reaction
+          await removeReaction(message, PROCESSING_REACTION);
+          await addReaction(message, FAILURE_REACTION);
+          
           // Wrap the URL in angle brackets to prevent Discord creating embeds,
           // and leave a blank line before the echoed error message.
           await message.reply(`Failed to queue URL\n\n${queueResult.error || CLI_UNAVAILABLE_MESSAGE}`);
         }
       } catch (error) {
+        // Remove processing reaction and add failure reaction
+        await removeReaction(message, PROCESSING_REACTION);
+        await addReaction(message, FAILURE_REACTION);
+        
         if (error instanceof CliRunnerError) {
           logger.error("CLI error during queue command", {
             messageId: message.id,

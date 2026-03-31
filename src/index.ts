@@ -504,8 +504,6 @@ const bot = new DiscordBot({
     const urls = extractUrls(message.content);
     if (urls.length > 0) {
       logger.info("Found URLs in message", { urls, messageId: message.id });
-      // Attempt to suppress embeds on the original message if permitted.
-      await suppressEmbedsIfPermitted(message);
 
       // Check CLI availability before processing URLs
       if (!(await checkCliAvailability(message))) {

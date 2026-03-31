@@ -244,6 +244,11 @@ export class CliRunnerError extends Error {
 const SB_CLI_PATH = process.env.SB_CLI_PATH || 
   path.resolve(process.cwd(), 'dist/src/cli/index.js');
 
+// Debug: Log which CLI path is being used
+console.log(`[CLI Debug] Using CLI at: ${SB_CLI_PATH}`);
+console.log(`[CLI Debug] SB_CLI_PATH env var: ${process.env.SB_CLI_PATH || 'not set'}`);
+console.log(`[CLI Debug] cwd: ${process.cwd()}`);
+
 /** Default timeout for CLI commands (5 minutes) */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -321,7 +326,10 @@ function runCliSubprocess(
   // Track stderr
   let stderrBuffer = "";
   subprocess.stderr!.on("data", (data: Buffer) => {
-    stderrBuffer += data.toString();
+    const chunk = data.toString();
+    stderrBuffer += chunk;
+    // Debug: Log stderr chunks as they arrive
+    console.log(`[CLI Debug] stderr chunk: ${chunk.substring(0, 200)}`);
   });
 
   // Create async iterator for stdout lines

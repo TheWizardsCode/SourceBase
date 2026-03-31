@@ -300,6 +300,11 @@ function runCliSubprocess(
   // Add remaining args
   cmdArgs.push(...args);
 
+  // Debug: Log environment variables being passed to CLI
+  const hasDbUrl = !!process.env.DATABASE_URL;
+  console.log(`[CLI Debug] Spawning CLI with DATABASE_URL ${hasDbUrl ? 'set' : 'NOT SET'}`);
+  console.log(`[CLI Debug] Command: ${SB_CLI_PATH} ${cmdArgs.join(' ')}`);
+  
   // Spawn the subprocess
   const subprocess = spawn(SB_CLI_PATH, cmdArgs, {
     cwd,

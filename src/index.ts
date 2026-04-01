@@ -248,15 +248,47 @@ async function processUrlWithProgress(
         lastPhase = event.phase;
         
         const progressMsg = formatProgressMessage(event);
-        
+
+        // Always ensure URLs shown to users are wrapped in backticks to avoid embeds.
+        // If event contains a url or title, prefer showing the title wrapped in ticks.
+        const safeProgressMsg = ((): string => {
+          try {
+            if (event.title) return progressMsg.replace(event.title, `\`${event.title}\``);
+            if (event.url) return progressMsg.replace(event.url, `\`${event.url}\``);
+            return progressMsg;
+          } catch {
+            return progressMsg;
+          }
+        })();
+
         if (thread) {
           try {
-            await thread.send(progressMsg);
+            await thread.send(safeProgressMsg);
           } catch (error) {
-            logger.warn("Failed to send progress update to thread", {
+            logger.warn("Failed to send progress update to thread; falling back to channel reply", {
               threadId: thread.id,
               phase: event.phase,
               error: error instanceof Error ? error.message : String(error),
+            });
+            // Fallback: reply in channel so user still receives updates
+            try {
+              await message.reply(safeProgressMsg);
+            } catch (err) {
+              logger.warn("Failed to send fallback progress reply to channel", {
+                messageId: message.id,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+        } else {
+          // No thread available -> send progress updates to channel (safe)
+          try {
+            await message.reply(safeProgressMsg);
+          } catch (err) {
+            logger.warn("Failed to send progress update to channel", {
+              messageId: message.id,
+              phase: event.phase,
+              error: err instanceof Error ? err.message : String(err),
             });
           }
         }
@@ -277,40 +309,61 @@ async function processUrlWithProgress(
         await removeReaction(message, PROCESSING_REACTION);
         await addReaction(message, SUCCESS_REACTION);
         
-        const successMsg = `✅ Added: ${finalResult.title || url}`;
-        
+        // Ensure title or URL displayed is wrapped in backticks to avoid embeds
+        const displayName = finalResult.title ? `\`${finalResult.title}\`` : `\`${url}\``;
+        const successMsg = `✅ Added: ${displayName}`;
+
         if (thread) {
           try {
             await thread.send(successMsg);
             // Archive the thread after successful completion
             await thread.setArchived(true);
           } catch (error) {
-            logger.warn("Failed to send final success message to thread", {
+            logger.warn("Failed to send final success message to thread; falling back to channel reply", {
               threadId: thread.id,
               error: error instanceof Error ? error.message : String(error),
             });
+            // Fallback to channel reply
+            try {
+              await message.reply(successMsg);
+            } catch (err) {
+              logger.warn("Failed to send fallback success reply to channel", {
+                messageId: message.id,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
           }
         } else {
           // Fallback to message reply if no thread
-          await message.reply(`Added URL: \`${url}\``);
+          await message.reply(successMsg);
         }
       } else {
         // Remove processing reaction and add failure reaction
         await removeReaction(message, PROCESSING_REACTION);
         await addReaction(message, FAILURE_REACTION);
         
-        const errorMsg = `❌ Failed to add URL\n\n${finalResult.error || CLI_UNAVAILABLE_MESSAGE}`;
-        
+        const displayUrl = `\`${url}\``;
+        const errorBody = finalResult.error || CLI_UNAVAILABLE_MESSAGE;
+        const errorMsg = `❌ Failed to add ${displayUrl}\n\n${errorBody}`;
+
         if (thread) {
           try {
             await thread.send(errorMsg);
             // Archive the thread after failure
             await thread.setArchived(true);
           } catch (error) {
-            logger.warn("Failed to send final error message to thread", {
+            logger.warn("Failed to send final error message to thread; falling back to channel reply", {
               threadId: thread.id,
               error: error instanceof Error ? error.message : String(error),
             });
+            try {
+              await message.reply(errorMsg);
+            } catch (err) {
+              logger.warn("Failed to send fallback error reply to channel", {
+                messageId: message.id,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
           }
         } else {
           // Fallback to message reply if no thread

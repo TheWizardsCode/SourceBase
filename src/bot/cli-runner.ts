@@ -240,13 +240,14 @@ export class CliRunnerError extends Error {
 // Configuration
 // ============================================================================
 
-/** Path to the sb CLI binary - prefer local build over global */
-const SB_CLI_PATH = process.env.SB_CLI_PATH || 
-  path.resolve(process.cwd(), 'dist/src/cli/index.js');
+/**
+ * CLI executable to invoke.
+ * We always use the globally-installed `ob` command by default.
+ */
+const CLI_EXECUTABLE = 'ob';
 
-// Debug: Log which CLI path is being used
-console.log(`[CLI Debug] Using CLI at: ${SB_CLI_PATH}`);
-console.log(`[CLI Debug] SB_CLI_PATH env var: ${process.env.SB_CLI_PATH || 'not set'}`);
+// Debug: Log which CLI executable will be invoked
+console.log(`[CLI Debug] Using CLI executable: ${CLI_EXECUTABLE}`);
 console.log(`[CLI Debug] cwd: ${process.cwd()}`);
 
 /** Default timeout for CLI commands (5 minutes) */
@@ -308,7 +309,7 @@ function runCliSubprocess(
   cmdArgs.push(...args);
 
   // Spawn the subprocess
-  const subprocess = spawn(SB_CLI_PATH, cmdArgs, {
+  const subprocess = spawn(CLI_EXECUTABLE, cmdArgs, {
     cwd,
     env: { ...process.env, ...env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -360,15 +361,15 @@ function runCliSubprocess(
       });
     });
 
-    subprocess.on("error", (error: Error) => {
+    subprocess.on("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timeout);
-      reject(
-        new CliRunnerError(
-          `Failed to spawn CLI: ${error.message}`,
-          -1,
-          stderrBuffer
-        )
-      );
+      // Capture spawn error details (ENOENT, EACCES, etc.) in stderrBuffer
+      const code = error && (error as any).code ? (error as any).code : undefined;
+      const errno = error && (error as any).errno ? (error as any).errno : undefined;
+      const spawnMsg = `Failed to spawn CLI: ${error.message}${code ? ` (code=${code})` : ""}${errno ? ` (errno=${errno})` : ""}`;
+      stderrBuffer += `\n[spawn error] ${spawnMsg}`;
+      console.log(`[CLI Debug] spawn error: ${spawnMsg}`);
+      reject(new CliRunnerError(spawnMsg, -1, stderrBuffer));
     });
   });
 
@@ -651,7 +652,7 @@ export async function isCliAvailable(): Promise<boolean> {
  * @param path - Path to the sb binary
  */
 export function setCliPath(path: string): void {
-  // This would need to be implemented via module-level variable
-  // For now, use the SB_CLI_PATH environment variable
-  process.env.SB_CLI_PATH = path;
+  // Intentionally removed. This project should use the globally-installed `ob` CLI.
+  // Keep the function exported for compatibility, but do not modify environment.
+  console.warn("setCliPath is a no-op in this build; configure a global 'ob' CLI instead.");
 }

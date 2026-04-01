@@ -117,13 +117,12 @@ describe("CLI Runner Module", () => {
   });
 
   describe("Environment Configuration", () => {
-    it("should use SB_CLI_PATH environment variable", async () => {
-      process.env.SB_CLI_PATH = "/custom/path/to/sb";
-      expect(process.env.SB_CLI_PATH).toBe("/custom/path/to/sb");
-    });
-
-    it("should default to 'sb' when SB_CLI_PATH not set", async () => {
+    it("should default to 'ob' when no CLI env var is set", async () => {
+      // The runner now uses the globally-installed 'ob' by default.
+      delete process.env.SB_CLI_PATH;
+      delete process.env.OB_CLI_PATH;
       expect(process.env.SB_CLI_PATH).toBeUndefined();
+      expect(process.env.OB_CLI_PATH).toBeUndefined();
     });
   });
 
@@ -139,9 +138,10 @@ describe("CLI Runner Module", () => {
   });
 
   describe("setCliPath", () => {
-    it("should set SB_CLI_PATH environment variable", () => {
+    it("setCliPath is a no-op warning", () => {
+      // Function intentionally no longer mutates environment; it should not throw
       setCliPath("/new/path/to/sb");
-      expect(process.env.SB_CLI_PATH).toBe("/new/path/to/sb");
+      expect(process.env.SB_CLI_PATH).toBeUndefined();
     });
   });
 

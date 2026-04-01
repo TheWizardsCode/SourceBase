@@ -242,12 +242,14 @@ export class CliRunnerError extends Error {
 
 /**
  * CLI executable to invoke.
- * We always use the globally-installed `ob` command by default.
+ * Default is the globally-installed `ob` command, but this can be
+ * overridden by the OB_CLI_PATH environment variable or by calling
+ * setCliPath(path) at runtime (useful for tests).
  */
-const CLI_EXECUTABLE = 'ob';
+let cliExecutable = process.env.OB_CLI_PATH || "ob";
 
 // Debug: Log which CLI executable will be invoked
-console.log(`[CLI Debug] Using CLI executable: ${CLI_EXECUTABLE}`);
+console.log(`[CLI Debug] Using CLI executable: ${cliExecutable}`);
 console.log(`[CLI Debug] cwd: ${process.cwd()}`);
 
 /** Default timeout for CLI commands (5 minutes) */
@@ -309,7 +311,7 @@ function runCliSubprocess(
   cmdArgs.push(...args);
 
   // Spawn the subprocess
-  const subprocess = spawn(CLI_EXECUTABLE, cmdArgs, {
+  const subprocess = spawn(cliExecutable, cmdArgs, {
     cwd,
     env: { ...process.env, ...env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -647,12 +649,22 @@ export async function isCliAvailable(): Promise<boolean> {
 }
 
 /**
- * Set the path to the sb CLI binary
+ * Set the path to the ob CLI binary at runtime. Passing `undefined` will reset
+ * the value to the environment variable OB_CLI_PATH or the default "ob".
  *
- * @param path - Path to the sb binary
+ * This is useful for tests that need to override which executable is spawned.
+ *
+ * @param path - Path to the ob binary or undefined to reset
  */
-export function setCliPath(path: string): void {
-  // Intentionally removed. This project should use the globally-installed `ob` CLI.
-  // Keep the function exported for compatibility, but do not modify environment.
-  console.warn("setCliPath is a no-op in this build; configure a global 'ob' CLI instead.");
+export function setCliPath(path: string | undefined): void {
+  const prev = cliExecutable;
+  cliExecutable = path || process.env.OB_CLI_PATH || "ob";
+  console.warn(`setCliPath: changed cli executable from ${prev} to ${cliExecutable}`);
+}
+
+/**
+ * Get the currently configured CLI executable path (useful for tests)
+ */
+export function getCliPath(): string {
+  return cliExecutable;
 }

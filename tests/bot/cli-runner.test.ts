@@ -1,23 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type {
+  AddProgressEvent,
+  ContextFlags,
+  RunnerOptions,
+  AddResult,
+  QueueResult,
+  StatsResult,
+  CliCommandResult,
+} from "../../src/bot/cli-runner.js";
+// Runtime imports for functions used by existing tests (these do not rely on mocking)
 import {
   CliRunnerError,
   getActiveChildProcessCount,
   terminateAllChildProcesses,
   setCliPath,
-  type AddProgressEvent,
-  type ContextFlags,
-  type RunnerOptions,
-  type AddResult,
-  type QueueResult,
-  type StatsResult,
-  type CliCommandResult,
 } from "../../src/bot/cli-runner.js";
 
 describe("CLI Runner Module", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Reset environment
-    delete process.env.SB_CLI_PATH;
+    delete process.env.OB_CLI_PATH;
   });
 
   afterEach(async () => {
@@ -119,10 +122,176 @@ describe("CLI Runner Module", () => {
   describe("Environment Configuration", () => {
     it("should default to 'ob' when no CLI env var is set", async () => {
       // The runner now uses the globally-installed 'ob' by default.
-      delete process.env.SB_CLI_PATH;
       delete process.env.OB_CLI_PATH;
-      expect(process.env.SB_CLI_PATH).toBeUndefined();
       expect(process.env.OB_CLI_PATH).toBeUndefined();
+    });
+
+    // Tests that require mocking child_process.spawn must import the module
+    // after stubbing the spawn implementation. We dynamically import the
+    // module in each test and use vi.doMock to replace child_process.spawn.
+    it("should spawn the default 'ob' executable when no env or API override is set", async () => {
+      // isolate module cache
+      vi.resetModules();
+
+      const spawnCalls: Array<{ exe: string; args: string[]; opts: any }> = [];
+
+      // Provide a runtime mock for child_process.spawn
+      await vi.doMock(
+        "child_process",
+        async () => {
+          const actual = await vi.importActual<typeof import("child_process")>(
+            "child_process"
+          );
+          const events = await vi.importActual<typeof import("events")>("events");
+          const stream = await vi.importActual<typeof import("stream")>("stream");
+
+          function makeFakeChild() {
+            const child = new events.EventEmitter();
+            // Attach stdout/stderr as Readable streams
+            const stdout = new stream.Readable({ read() {} });
+            const stderr = new stream.Readable({ read() {} });
+            (child as any).stdout = stdout;
+            (child as any).stderr = stderr;
+            (child as any).exitCode = null;
+            (child as any).signalCode = null;
+            (child as any).kill = (signal?: string) => {
+              // simulate immediate exit
+              setTimeout(() => child.emit("exit", 0), 0);
+              return true;
+            };
+            return child as unknown as import("child_process").ChildProcess;
+          }
+
+          const mockSpawn = (exe: string, args: string[], opts: any) => {
+            spawnCalls.push({ exe, args, opts });
+            const child = makeFakeChild();
+            // end stdout/stderr streams
+            (child as any).stdout.push(null);
+            (child as any).stderr.push(null);
+            // emit exit next tick
+            setTimeout(() => child.emit("exit", 0), 0);
+            return child;
+          };
+
+          return { ...actual, spawn: mockSpawn };
+        }
+      );
+
+      const mod = await import("../../src/bot/cli-runner.js");
+
+      // Ensure no env var is present and reset module state
+      delete process.env.OB_CLI_PATH;
+      mod.setCliPath(undefined);
+
+      // Call a simple command to trigger spawn
+      await mod.runCliCommand("--version", [], { timeoutMs: 100 });
+
+      expect(spawnCalls.length).toBeGreaterThan(0);
+      expect(spawnCalls[0].exe).toBe("ob");
+    });
+
+    it("should use OB_CLI_PATH when set in environment", async () => {
+      vi.resetModules();
+
+      const spawnCalls: Array<{ exe: string; args: string[]; opts: any }> = [];
+
+      await vi.doMock("child_process", async () => {
+        const actual = await vi.importActual<typeof import("child_process")>(
+          "child_process"
+        );
+        const events = await vi.importActual<typeof import("events")>("events");
+        const stream = await vi.importActual<typeof import("stream")>("stream");
+
+        function makeFakeChild() {
+          const child = new events.EventEmitter();
+          const stdout = new stream.Readable({ read() {} });
+          const stderr = new stream.Readable({ read() {} });
+          (child as any).stdout = stdout;
+          (child as any).stderr = stderr;
+          (child as any).exitCode = null;
+          (child as any).signalCode = null;
+          (child as any).kill = (signal?: string) => {
+            setTimeout(() => child.emit("exit", 0), 0);
+            return true;
+          };
+          return child as unknown as import("child_process").ChildProcess;
+        }
+
+        const mockSpawn = (exe: string, args: string[], opts: any) => {
+          spawnCalls.push({ exe, args, opts });
+          const child = makeFakeChild();
+          (child as any).stdout.push(null);
+          (child as any).stderr.push(null);
+          setTimeout(() => child.emit("exit", 0), 0);
+          return child;
+        };
+
+        return { ...actual, spawn: mockSpawn };
+      });
+
+      // Set the env var before importing the module so it picks it up
+      process.env.OB_CLI_PATH = "/tmp/fake/ob";
+      const mod = await import("../../src/bot/cli-runner.js");
+
+      mod.setCliPath(undefined);
+      await mod.runCliCommand("--version", [], { timeoutMs: 100 });
+
+      expect(spawnCalls.length).toBeGreaterThan(0);
+      expect(spawnCalls[0].exe).toBe("/tmp/fake/ob");
+    });
+
+    it("setCliPath should override env and default values", async () => {
+      vi.resetModules();
+
+      const spawnCalls: Array<{ exe: string; args: string[]; opts: any }> = [];
+
+      await vi.doMock("child_process", async () => {
+        const actual = await vi.importActual<typeof import("child_process")>(
+          "child_process"
+        );
+        const events = await vi.importActual<typeof import("events")>("events");
+        const stream = await vi.importActual<typeof import("stream")>("stream");
+
+        function makeFakeChild() {
+          const child = new events.EventEmitter();
+          const stdout = new stream.Readable({ read() {} });
+          const stderr = new stream.Readable({ read() {} });
+          (child as any).stdout = stdout;
+          (child as any).stderr = stderr;
+          (child as any).exitCode = null;
+          (child as any).signalCode = null;
+          (child as any).kill = (signal?: string) => {
+            setTimeout(() => child.emit("exit", 0), 0);
+            return true;
+          };
+          return child as unknown as import("child_process").ChildProcess;
+        }
+
+        const mockSpawn = (exe: string, args: string[], opts: any) => {
+          spawnCalls.push({ exe, args, opts });
+          const child = makeFakeChild();
+          (child as any).stdout.push(null);
+          (child as any).stderr.push(null);
+          setTimeout(() => child.emit("exit", 0), 0);
+          return child;
+        };
+
+        return { ...actual, spawn: mockSpawn };
+      });
+
+      // Set env var then import module
+      process.env.OB_CLI_PATH = "/tmp/fake/ob";
+      const mod = await import("../../src/bot/cli-runner.js");
+
+      // Now override via API
+      mod.setCliPath("/my/override/ob");
+      await mod.runCliCommand("--version", [], { timeoutMs: 100 });
+
+      expect(spawnCalls.length).toBeGreaterThan(0);
+      expect(spawnCalls[0].exe).toBe("/my/override/ob");
+
+      // Restore
+      mod.setCliPath(undefined);
     });
   });
 

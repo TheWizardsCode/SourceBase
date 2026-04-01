@@ -468,13 +468,13 @@ export async function* runAddCommand(
     };
     return result;
   } catch (error) {
+    // If the subprocess failed to spawn (ENOENT, EACCES, etc.) we want
+    // callers to be able to detect the structured CliRunnerError. Re-throw
+    // CliRunnerError so higher-level handlers (for example the Discord
+    // message handler) can surface a friendly message to users and avoid
+    // leaking stack traces.
     if (error instanceof CliRunnerError) {
-      const result: AddResult = {
-        success: false,
-        url,
-        error: error.message,
-      };
-      return result;
+      throw error;
     }
     throw error;
   }

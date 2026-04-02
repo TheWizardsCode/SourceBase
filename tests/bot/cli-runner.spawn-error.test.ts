@@ -62,15 +62,27 @@ describe("runAddCommand spawn error handling", () => {
     const mod = await import("../../src/bot/cli-runner.js");
     mod.setCliPath(undefined);
 
-    // runAddCommand returns an async generator, but on spawn error the
+    // runAddCommand returns an async generator; on spawn error the
     // underlying exitPromise will reject with CliRunnerError which should
-    // be re-thrown by runAddCommand. We therefore attempt to iterate the
-    // generator and expect a thrown CliRunnerError.
+    // be re-thrown by runAddCommand. We iterate the generator and assert
+    // the thrown error is a CliRunnerError and contains an explanatory
+    // message (including the ENOENT indicator) and the structured fields.
     const gen = mod.runAddCommand("https://x.example");
 
-    // advancing the generator will eventually cause the spawn error to
-    // be observed when the generator awaits the exitPromise. Use next()
-    // and assert it rejects with CliRunnerError.
-    await expect(gen.next()).rejects.toMatchObject({ name: "CliRunnerError" });
+    try {
+      await gen.next();
+      throw new Error("Expected generator to reject with CliRunnerError");
+    } catch (err: any) {
+      // Validate error shape and content per acceptance criteria
+      expect(err).toBeInstanceOf(mod.CliRunnerError);
+      expect(err.name).toBe("CliRunnerError");
+      // Message should mention spawn failure and ENOENT
+      expect(err.message).toEqual(expect.stringContaining("Failed to spawn CLI"));
+      expect(err.message).toEqual(expect.stringContaining("ENOENT"));
+      // Exit code for spawn failure is set to -1
+      expect(err.exitCode).toBe(-1);
+      // Stderr should include the spawn error marker
+      expect(err.stderr).toEqual(expect.stringContaining("[spawn error]"));
+    }
   });
 });

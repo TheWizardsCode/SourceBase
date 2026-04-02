@@ -135,7 +135,9 @@ export function createSpawnMockWithStderr(stderrLines: string[], exitCode = 1) {
 
 export async function doMockChildProcess(vi: any, mockSpawn: (exe: string, args: string[], opts: any) => ChildProcess) {
   await vi.doMock("child_process", async () => {
-    const actual = await vi.importActual<typeof import("child_process")>("child_process");
+    // vi.importActual is untyped at runtime; avoid using a generic type argument
+    // directly on the call to prevent TS2347 (Untyped function calls may not accept type arguments).
+    const actual = (await vi.importActual("child_process")) as typeof import("child_process");
     return { ...actual, spawn: mockSpawn };
   });
 }

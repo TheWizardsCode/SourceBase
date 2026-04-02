@@ -100,6 +100,7 @@ See [Local Setup](#local-setup) below for detailed instructions.
 - `npm run start` - Run compiled bot from `dist/`
 - `npm run lint` - Type check without emitting files
 - `npm run test` - Run unit tests
+ - `npm run test:coverage` - Run tests with coverage and enforce >=80% coverage for the bot/ module
 - `npm run db:migrate` - Apply SQL migrations to PostgreSQL
 
 ## CLI Commands

@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "start": "node dist/src/index.js",
     "start:dev": "tsx watch src/index.ts"
   },
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
+    "@vitest/coverage-istanbul": "^3.2.4",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

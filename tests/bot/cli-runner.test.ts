@@ -133,49 +133,11 @@ describe("CLI Runner Module", () => {
       // isolate module cache
       vi.resetModules();
 
-      const spawnCalls: Array<{ exe: string; args: string[]; opts: any }> = [];
-
-      // Provide a runtime mock for child_process.spawn
-      await vi.doMock(
-        "child_process",
-        async () => {
-          const actual = await vi.importActual<typeof import("child_process")>(
-            "child_process"
-          );
-          const events = await vi.importActual<typeof import("events")>("events");
-          const stream = await vi.importActual<typeof import("stream")>("stream");
-
-          function makeFakeChild() {
-            const child = new events.EventEmitter();
-            // Attach stdout/stderr as Readable streams
-            const stdout = new stream.Readable({ read() {} });
-            const stderr = new stream.Readable({ read() {} });
-            (child as any).stdout = stdout;
-            (child as any).stderr = stderr;
-            (child as any).exitCode = null;
-            (child as any).signalCode = null;
-            (child as any).kill = (signal?: string) => {
-              // simulate immediate exit
-              setTimeout(() => child.emit("exit", 0), 0);
-              return true;
-            };
-            return child as unknown as import("child_process").ChildProcess;
-          }
-
-          const mockSpawn = (exe: string, args: string[], opts: any) => {
-            spawnCalls.push({ exe, args, opts });
-            const child = makeFakeChild();
-            // end stdout/stderr streams
-            (child as any).stdout.push(null);
-            (child as any).stderr.push(null);
-            // emit exit next tick
-            setTimeout(() => child.emit("exit", 0), 0);
-            return child;
-          };
-
-          return { ...actual, spawn: mockSpawn };
-        }
-      );
+      // Use shared helper to mock child_process.spawn
+      const helper = await import("../helpers/mockCliSpawn.js");
+      const { mockSpawn, spawnCalls } = helper.createSpawnMockSimple();
+      (global as any).spawnCalls = spawnCalls;
+      await helper.doMockChildProcess(vi, mockSpawn);
 
       const mod = await import("../../src/bot/cli-runner.js");
 
@@ -186,8 +148,11 @@ describe("CLI Runner Module", () => {
       // Call a simple command to trigger spawn
       await mod.runCliCommand("--version", [], { timeoutMs: 100 });
 
-      expect(spawnCalls.length).toBeGreaterThan(0);
-      expect(spawnCalls[0].exe).toBe("ob");
+      // spawnCalls is provided by the helper as a captured array
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const globalSpawnCalls = (global as any).spawnCalls as Array<{ exe: string; args: string[]; opts: any }>;
+      expect(globalSpawnCalls.length).toBeGreaterThan(0);
+      expect(globalSpawnCalls[0].exe).toBe("ob");
     });
 
     it("should use OB_CLI_PATH when set in environment", async () => {
@@ -195,39 +160,12 @@ describe("CLI Runner Module", () => {
 
       const spawnCalls: Array<{ exe: string; args: string[]; opts: any }> = [];
 
-      await vi.doMock("child_process", async () => {
-        const actual = await vi.importActual<typeof import("child_process")>(
-          "child_process"
-        );
-        const events = await vi.importActual<typeof import("events")>("events");
-        const stream = await vi.importActual<typeof import("stream")>("stream");
-
-        function makeFakeChild() {
-          const child = new events.EventEmitter();
-          const stdout = new stream.Readable({ read() {} });
-          const stderr = new stream.Readable({ read() {} });
-          (child as any).stdout = stdout;
-          (child as any).stderr = stderr;
-          (child as any).exitCode = null;
-          (child as any).signalCode = null;
-          (child as any).kill = (signal?: string) => {
-            setTimeout(() => child.emit("exit", 0), 0);
-            return true;
-          };
-          return child as unknown as import("child_process").ChildProcess;
-        }
-
-        const mockSpawn = (exe: string, args: string[], opts: any) => {
-          spawnCalls.push({ exe, args, opts });
-          const child = makeFakeChild();
-          (child as any).stdout.push(null);
-          (child as any).stderr.push(null);
-          setTimeout(() => child.emit("exit", 0), 0);
-          return child;
-        };
-
-        return { ...actual, spawn: mockSpawn };
-      });
+      const helper = await import("../helpers/mockCliSpawn.js");
+      const { mockSpawn, spawnCalls: spawnCallsLocal } = helper.createSpawnMockSimple();
+      // expose spawnCalls to the test scope
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (global as any).spawnCalls = spawnCallsLocal;
+      await helper.doMockChildProcess(vi, mockSpawn);
 
       // Set the env var before importing the module so it picks it up
       process.env.OB_CLI_PATH = "/tmp/fake/ob";
@@ -236,8 +174,10 @@ describe("CLI Runner Module", () => {
       mod.setCliPath(undefined);
       await mod.runCliCommand("--version", [], { timeoutMs: 100 });
 
-      expect(spawnCalls.length).toBeGreaterThan(0);
-      expect(spawnCalls[0].exe).toBe("/tmp/fake/ob");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const globalSpawnCalls2 = (global as any).spawnCalls as Array<{ exe: string; args: string[]; opts: any }>;
+      expect(globalSpawnCalls2.length).toBeGreaterThan(0);
+      expect(globalSpawnCalls2[0].exe).toBe("/tmp/fake/ob");
     });
 
     it("setCliPath should override env and default values", async () => {
@@ -245,39 +185,10 @@ describe("CLI Runner Module", () => {
 
       const spawnCalls: Array<{ exe: string; args: string[]; opts: any }> = [];
 
-      await vi.doMock("child_process", async () => {
-        const actual = await vi.importActual<typeof import("child_process")>(
-          "child_process"
-        );
-        const events = await vi.importActual<typeof import("events")>("events");
-        const stream = await vi.importActual<typeof import("stream")>("stream");
-
-        function makeFakeChild() {
-          const child = new events.EventEmitter();
-          const stdout = new stream.Readable({ read() {} });
-          const stderr = new stream.Readable({ read() {} });
-          (child as any).stdout = stdout;
-          (child as any).stderr = stderr;
-          (child as any).exitCode = null;
-          (child as any).signalCode = null;
-          (child as any).kill = (signal?: string) => {
-            setTimeout(() => child.emit("exit", 0), 0);
-            return true;
-          };
-          return child as unknown as import("child_process").ChildProcess;
-        }
-
-        const mockSpawn = (exe: string, args: string[], opts: any) => {
-          spawnCalls.push({ exe, args, opts });
-          const child = makeFakeChild();
-          (child as any).stdout.push(null);
-          (child as any).stderr.push(null);
-          setTimeout(() => child.emit("exit", 0), 0);
-          return child;
-        };
-
-        return { ...actual, spawn: mockSpawn };
-      });
+      const helper2 = await import("../helpers/mockCliSpawn.js");
+      const { mockSpawn: mockSpawn2, spawnCalls: spawnCallsLocal2 } = helper2.createSpawnMockSimple();
+      (global as any).spawnCalls = spawnCallsLocal2;
+      await helper2.doMockChildProcess(vi, mockSpawn2);
 
       // Set env var then import module
       process.env.OB_CLI_PATH = "/tmp/fake/ob";
@@ -287,8 +198,10 @@ describe("CLI Runner Module", () => {
       mod.setCliPath("/my/override/ob");
       await mod.runCliCommand("--version", [], { timeoutMs: 100 });
 
-      expect(spawnCalls.length).toBeGreaterThan(0);
-      expect(spawnCalls[0].exe).toBe("/my/override/ob");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const globalSpawnCalls3 = (global as any).spawnCalls as Array<{ exe: string; args: string[]; opts: any }>;
+      expect(globalSpawnCalls3.length).toBeGreaterThan(0);
+      expect(globalSpawnCalls3[0].exe).toBe("/my/override/ob");
 
       // Restore
       mod.setCliPath(undefined);

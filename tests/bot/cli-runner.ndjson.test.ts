@@ -15,49 +15,12 @@ describe("runAddCommand NDJSON parsing", () => {
   });
 
   it("parses NDJSON progress events and returns success when completed", async () => {
-    await vi.doMock("child_process", async () => {
-      const actual = await vi.importActual<typeof import("child_process")>(
-        "child_process"
-      );
-      const events = await vi.importActual<typeof import("events")>("events");
-      const stream = await vi.importActual<typeof import("stream")>("stream");
-
-      function makeFakeChild() {
-        const child = new events.EventEmitter();
-        const stdout = new stream.Readable({ read() {} });
-        const stderr = new stream.Readable({ read() {} });
-        (child as any).stdout = stdout;
-        (child as any).stderr = stderr;
-        (child as any).exitCode = null;
-        (child as any).signalCode = null;
-        (child as any).kill = (signal?: string) => {
-          // simulate immediate exit
-          setTimeout(() => child.emit("exit", 0), 0);
-          return true;
-        };
-        return child as unknown as import("child_process").ChildProcess;
-      }
-
-      const mockSpawn = (exe: string, args: string[], opts: any) => {
-        const child = makeFakeChild();
-
-        // Emit NDJSON lines on stdout, then end and exit
-        setTimeout(() => {
-          (child as any).stdout.push(
-            JSON.stringify({ phase: "downloading", url: "https://x.example" }) + "\n"
-          );
-          (child as any).stdout.push(
-            JSON.stringify({ phase: "completed", url: "https://x.example", title: "Page Title" }) + "\n"
-          );
-          (child as any).stdout.push(null);
-          setTimeout(() => child.emit("exit", 0), 0);
-        }, 0);
-
-        return child;
-      };
-
-      return { ...actual, spawn: mockSpawn };
-    });
+    const helper = await import("../helpers/mockCliSpawn.js");
+    const { mockSpawn } = helper.createSpawnMockNdjson([
+      { phase: "downloading", url: "https://x.example" },
+      { phase: "completed", url: "https://x.example", title: "Page Title" },
+    ]);
+    await helper.doMockChildProcess(vi, mockSpawn);
 
     const mod = await import("../../src/bot/cli-runner.js");
     mod.setCliPath(undefined);
@@ -88,43 +51,13 @@ describe("runAddCommand NDJSON parsing", () => {
   });
 
   it("ignores invalid NDJSON lines and still returns result", async () => {
-    await vi.doMock("child_process", async () => {
-      const actual = await vi.importActual<typeof import("child_process")>(
-        "child_process"
-      );
-      const events = await vi.importActual<typeof import("events")>("events");
-      const stream = await vi.importActual<typeof import("stream")>("stream");
-
-      function makeFakeChild() {
-        const child = new events.EventEmitter();
-        const stdout = new stream.Readable({ read() {} });
-        const stderr = new stream.Readable({ read() {} });
-        (child as any).stdout = stdout;
-        (child as any).stderr = stderr;
-        (child as any).exitCode = null;
-        (child as any).signalCode = null;
-        (child as any).kill = (signal?: string) => {
-          setTimeout(() => child.emit("exit", 0), 0);
-          return true;
-        };
-        return child as unknown as import("child_process").ChildProcess;
-      }
-
-      const mockSpawn = (exe: string, args: string[], opts: any) => {
-        const child = makeFakeChild();
-        setTimeout(() => {
-          (child as any).stdout.push("not-json-line\n");
-          (child as any).stdout.push(
-            JSON.stringify({ phase: "completed", url: "https://x.example", title: "Good" }) + "\n"
-          );
-          (child as any).stdout.push(null);
-          setTimeout(() => child.emit("exit", 0), 0);
-        }, 0);
-        return child;
-      };
-
-      return { ...actual, spawn: mockSpawn };
+    const helper2 = await import("../helpers/mockCliSpawn.js");
+    const { mockSpawn: mockSpawn2 } = helper2.createSpawnMockInvalidThenValid("not-json-line", {
+      phase: "completed",
+      url: "https://x.example",
+      title: "Good",
     });
+    await helper2.doMockChildProcess(vi, mockSpawn2);
 
     const mod = await import("../../src/bot/cli-runner.js");
     mod.setCliPath(undefined);
@@ -154,45 +87,12 @@ describe("runAddCommand NDJSON parsing", () => {
   });
 
   it("returns failure when last event indicates failed phase", async () => {
-    await vi.doMock("child_process", async () => {
-      const actual = await vi.importActual<typeof import("child_process")>(
-        "child_process"
-      );
-      const events = await vi.importActual<typeof import("events")>("events");
-      const stream = await vi.importActual<typeof import("stream")>("stream");
-
-      function makeFakeChild() {
-        const child = new events.EventEmitter();
-        const stdout = new stream.Readable({ read() {} });
-        const stderr = new stream.Readable({ read() {} });
-        (child as any).stdout = stdout;
-        (child as any).stderr = stderr;
-        (child as any).exitCode = null;
-        (child as any).signalCode = null;
-        (child as any).kill = (signal?: string) => {
-          setTimeout(() => child.emit("exit", 0), 0);
-          return true;
-        };
-        return child as unknown as import("child_process").ChildProcess;
-      }
-
-      const mockSpawn = (exe: string, args: string[], opts: any) => {
-        const child = makeFakeChild();
-        setTimeout(() => {
-          (child as any).stdout.push(
-            JSON.stringify({ phase: "downloading", url: "https://x.example" }) + "\n"
-          );
-          (child as any).stdout.push(
-            JSON.stringify({ phase: "failed", url: "https://x.example", message: "Not found" }) + "\n"
-          );
-          (child as any).stdout.push(null);
-          setTimeout(() => child.emit("exit", 0), 0);
-        }, 0);
-        return child;
-      };
-
-      return { ...actual, spawn: mockSpawn };
-    });
+    const helper3 = await import("../helpers/mockCliSpawn.js");
+    const { mockSpawn: mockSpawn3 } = helper3.createSpawnMockNdjson([
+      { phase: "downloading", url: "https://x.example" },
+      { phase: "failed", url: "https://x.example", message: "Not found" },
+    ]);
+    await helper3.doMockChildProcess(vi, mockSpawn3);
 
     const mod = await import("../../src/bot/cli-runner.js");
     mod.setCliPath(undefined);
@@ -221,42 +121,9 @@ describe("runAddCommand NDJSON parsing", () => {
   });
 
   it("returns failure and includes stderr when CLI exits non-zero", async () => {
-    await vi.doMock("child_process", async () => {
-      const actual = await vi.importActual<typeof import("child_process")>(
-        "child_process"
-      );
-      const events = await vi.importActual<typeof import("events")>("events");
-      const stream = await vi.importActual<typeof import("stream")>("stream");
-
-      function makeFakeChild() {
-        const child = new events.EventEmitter();
-        const stdout = new stream.Readable({ read() {} });
-        const stderr = new stream.Readable({ read() {} });
-        (child as any).stdout = stdout;
-        (child as any).stderr = stderr;
-        (child as any).exitCode = null;
-        (child as any).signalCode = null;
-        (child as any).kill = (signal?: string) => {
-          setTimeout(() => child.emit("exit", 2), 0);
-          return true;
-        };
-        return child as unknown as import("child_process").ChildProcess;
-      }
-
-      const mockSpawn = (exe: string, args: string[], opts: any) => {
-        const child = makeFakeChild();
-        setTimeout(() => {
-          // emit some stderr data
-          (child as any).stderr.push("simulated error output\n");
-          (child as any).stderr.push(null);
-          (child as any).stdout.push(null);
-          setTimeout(() => child.emit("exit", 2), 0);
-        }, 0);
-        return child;
-      };
-
-      return { ...actual, spawn: mockSpawn };
-    });
+    const helper4 = await import("../helpers/mockCliSpawn.js");
+    const { mockSpawn: mockSpawn4 } = helper4.createSpawnMockWithStderr(["simulated error output"], 2);
+    await helper4.doMockChildProcess(vi, mockSpawn4);
 
     const mod = await import("../../src/bot/cli-runner.js");
     mod.setCliPath(undefined);

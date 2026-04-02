@@ -320,49 +320,19 @@ describe("index message handler integration", () => {
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
       vi.doUnmock("../src/bot/cli-runner.js");
 
-      await vi.doMock("child_process", async () => {
-        const actual = await vi.importActual<typeof import("child_process")>("child_process");
-        const events = await vi.importActual<typeof import("events")>("events");
-        const stream = await vi.importActual<typeof import("stream")>("stream");
-
-        function makeFakeChild(): import("child_process").ChildProcess {
-          const child = new events.EventEmitter();
-          const stdout = new stream.Readable({ read() {} });
-          const stderr = new stream.Readable({ read() {} });
-          (child as any).stdout = stdout;
-          (child as any).stderr = stderr;
-          (child as any).exitCode = null;
-          (child as any).signalCode = null;
-          (child as any).kill = (_signal?: string) => {
-            setTimeout(() => child.emit("exit", 0), 0);
-            return true;
-          };
-          return child as unknown as import("child_process").ChildProcess;
+      const helper = await import("./helpers/mockCliSpawn.js");
+      const { mockSpawn: versionSpawn } = helper.createSpawnMockVersion();
+      const { mockSpawn: ndjsonSpawn } = helper.createSpawnMockNdjson([
+        { phase: "completed", url: "https://ctx.example/item", title: "Ctx Title" },
+      ]);
+      const compositeSpawn = (exe: string, args: string[], opts: unknown) => {
+        spawnCalls.push({ exe, args, opts });
+        if (args && args[0] === "--version") {
+          return versionSpawn(exe, args, opts);
         }
-
-        const mockSpawn = (exe: string, args: string[], opts: unknown) => {
-          spawnCalls.push({ exe, args, opts });
-          const child = makeFakeChild();
-
-          setTimeout(() => {
-            if (args[0] === "--version") {
-              (child as any).stdout.push("v1.2.3\n");
-            } else if (args[0] === "add") {
-              (child as any).stdout.push(
-                `${JSON.stringify({ phase: "completed", url: "https://ctx.example/item", title: "Ctx Title" })}\n`
-              );
-            }
-
-            (child as any).stdout.push(null);
-            (child as any).stderr.push(null);
-            setTimeout(() => child.emit("exit", 0), 0);
-          }, 0);
-
-          return child;
-        };
-
-        return { ...actual, spawn: mockSpawn };
-      });
+        return ndjsonSpawn(exe, args, opts);
+      };
+      await helper.doMockChildProcess(vi, compositeSpawn);
     });
 
     const { message } = createFakeMessage("https://ctx.example/item", {

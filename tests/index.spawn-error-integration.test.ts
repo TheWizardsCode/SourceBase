@@ -9,51 +9,17 @@ describe("Discord message handler spawn ENOENT integration", () => {
 
   it("should reply with friendly CLI unavailable message when add spawn fails with ENOENT", async () => {
     // Mock child_process.spawn to succeed for --version but fail for add
-    await vi.doMock("child_process", async () => {
-      const actual = await vi.importActual<typeof import("child_process")>("child_process");
-      const events = await vi.importActual<typeof import("events")>("events");
-      const stream = await vi.importActual<typeof import("stream")>("stream");
-
-      function makeFakeChild() {
-        const child = new events.EventEmitter();
-        const stdout = new stream.Readable({ read() {} });
-        const stderr = new stream.Readable({ read() {} });
-        (child as any).stdout = stdout;
-        (child as any).stderr = stderr;
-        (child as any).exitCode = null;
-        (child as any).signalCode = null;
-        (child as any).kill = (signal?: string) => {
-          setTimeout(() => child.emit("exit", 0), 0);
-          return true;
-        };
-        return child as unknown as import("child_process").ChildProcess;
+    const helper = await import("./helpers/mockCliSpawn.js");
+    // Compose a custom mock that errors for `add` and returns version for others
+    const { mockSpawn: versionSpawn } = helper.createSpawnMockVersion();
+    const { mockSpawn: errorSpawn } = helper.createSpawnMockSpawnError("ENOENT");
+    const compositeSpawn = (exe: string, args: string[], opts: any) => {
+      if (args && args[0] === "add") {
+        return errorSpawn(exe, args, opts);
       }
-
-      const mockSpawn = (exe: string, args: string[], opts: any) => {
-        const child = makeFakeChild();
-
-        setTimeout(() => {
-          if (args && args[0] === "add") {
-            const err: NodeJS.ErrnoException = new Error("spawn ENOENT");
-            err.code = "ENOENT";
-            (child as any).emit("error", err);
-            try {
-              (child as any).stdout.push(null);
-              (child as any).stderr.push(null);
-            } catch {}
-          } else {
-            // Simulate --version success
-            (child as any).stdout.push("v1.2.3\n");
-            (child as any).stdout.push(null);
-            setTimeout(() => child.emit("exit", 0), 0);
-          }
-        }, 0);
-
-        return child;
-      };
-
-      return { ...actual, spawn: mockSpawn };
-    });
+      return versionSpawn(exe, args, opts);
+    };
+    await helper.doMockChildProcess(vi, compositeSpawn);
 
     // Mock DiscordBot to capture the passed handlers without starting network
     await vi.doMock("../src/discord/client.js", async () => {

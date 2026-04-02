@@ -208,6 +208,55 @@ describe("CLI Runner Module", () => {
     });
   });
 
+  describe("runSummaryCommand", () => {
+    it("returns summary text from stdout when command succeeds", async () => {
+      vi.resetModules();
+
+      const helper = await import("../helpers/mockCliSpawn.js");
+      const { mockSpawn, spawnCalls } = helper.createSpawnMockSummary([
+        "This is a generated summary.",
+        "Second line.",
+      ]);
+      await helper.doMockChildProcess(vi, mockSpawn);
+
+      const mod = await import("../../src/bot/cli-runner.js");
+      mod.setCliPath(undefined);
+
+      const result = await mod.runSummaryCommand("https://summary.example/item", {
+        channelId: "channel-1",
+        messageId: "message-1",
+        authorId: "author-1",
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.url).toBe("https://summary.example/item");
+      expect(result.summary).toBe("This is a generated summary.\nSecond line.");
+
+      const summaryCall = spawnCalls.find((call: { args: string[] }) => call.args[0] === "summary");
+      expect(summaryCall).toBeDefined();
+
+      // summary only accepts a URL argument; context metadata is reserved for add/queue
+      expect(summaryCall!.args).not.toContain("--tag");
+      expect(summaryCall!.args).toContain("https://summary.example/item");
+    });
+
+    it("returns failure when summary command exits non-zero", async () => {
+      vi.resetModules();
+
+      const helper = await import("../helpers/mockCliSpawn.js");
+      const { mockSpawn } = helper.createSpawnMockWithStderr(["summary failed"], 1);
+      await helper.doMockChildProcess(vi, mockSpawn);
+
+      const mod = await import("../../src/bot/cli-runner.js");
+      mod.setCliPath(undefined);
+
+      const result = await mod.runSummaryCommand("https://summary.example/fail");
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("summary failed");
+    });
+  });
+
   describe("Process Management", () => {
     it("should return 0 for active child process count initially", () => {
       expect(getActiveChildProcessCount()).toBe(0);

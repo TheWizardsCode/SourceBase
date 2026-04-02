@@ -3,6 +3,28 @@ import { z } from "zod";
 
 dotenv.config();
 
+const envBoolean = z.preprocess((value) => {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return value;
+}, z.boolean());
+
 // Bot configuration schema - only includes what the bot actually needs
 // CLI-related config has been moved to the openBrain repository
 export const botConfigSchema = z.object({
@@ -12,6 +34,11 @@ export const botConfigSchema = z.object({
   
   // Optional configuration
   LOG_LEVEL: z.string().optional().default("info"),
+
+  // Summary posting behavior
+  SEND_SUMMARY_ON_INSERT: envBoolean.optional().default(true),
+  DEFAULT_DISCORD_CHANNEL_ID: z.string().optional(),
+  OPENBRAIN_ITEM_URL_TEMPLATE: z.string().optional(),
   
   // File URL configuration
   ALLOWED_FILE_URL_USERS: z.string().optional().transform(v => v ? v.split(',').map(id => id.trim()) : []),

@@ -52,6 +52,8 @@ export interface AddProgressEvent {
   title?: string;
   /** Optional timestamp */
   timestamp?: string;
+  /** Optional OpenBrain item id */
+  id?: number | string;
 }
 
 /**
@@ -90,6 +92,10 @@ export interface AddResult {
   error?: string;
   /** Title of the page if successful */
   title?: string;
+  /** OpenBrain item id if provided by CLI events */
+  id?: number;
+  /** Timestamp if provided by CLI events */
+  timestamp?: string;
 }
 
 /**
@@ -104,6 +110,20 @@ export interface QueueResult {
   error?: string;
   /** Queue ID if successful */
   id?: number;
+}
+
+/**
+ * Result of summary command
+ */
+export interface SummaryResult {
+  /** Whether the operation succeeded */
+  success: boolean;
+  /** URL that was summarized */
+  url: string;
+  /** Generated summary text */
+  summary?: string;
+  /** Error message if failed */
+  error?: string;
 }
 
 /**
@@ -293,18 +313,23 @@ function runCliSubprocess(
     timeoutMs = DEFAULT_TIMEOUT_MS,
   } = options;
 
+  const supportsDiscordContextTags = command === "add" || command === "queue";
+
   // Build command arguments
   const cmdArgs = [command];
 
-  // Add context flags if provided
-  if (channelId) {
-    cmdArgs.push("--channel-id", channelId);
-  }
-  if (messageId) {
-    cmdArgs.push("--message-id", messageId);
-  }
-  if (authorId) {
-    cmdArgs.push("--author-id", authorId);
+  // Add context tags for commands that support metadata tags.
+  // OpenBrain CLI does not support --channel-id/--message-id/--author-id flags.
+  if (supportsDiscordContextTags) {
+    if (channelId) {
+      cmdArgs.push("--tag", `discord_channel_id:${channelId}`);
+    }
+    if (messageId) {
+      cmdArgs.push("--tag", `discord_message_id:${messageId}`);
+    }
+    if (authorId) {
+      cmdArgs.push("--tag", `discord_author_id:${authorId}`);
+    }
   }
 
   // Add remaining args
@@ -443,12 +468,22 @@ export async function* runAddCommand(
       return result;
     }
 
+    const rawId = (lastEvent as { id?: unknown } | null)?.id;
+    const eventId =
+      typeof rawId === "number"
+        ? rawId
+        : typeof rawId === "string" && /^\d+$/.test(rawId)
+          ? parseInt(rawId, 10)
+          : undefined;
+
     // Determine result from last event
     if (lastEvent?.phase === "completed") {
       const result: AddResult = {
         success: true,
         url,
         title: lastEvent.title,
+        id: eventId,
+        timestamp: lastEvent.timestamp,
       };
       return result;
     } else if (lastEvent?.phase === "failed") {
@@ -456,6 +491,8 @@ export async function* runAddCommand(
         success: false,
         url,
         error: lastEvent.message || "Unknown error during ingestion",
+        id: eventId,
+        timestamp: lastEvent.timestamp,
       };
       return result;
     }
@@ -536,6 +573,54 @@ export async function runQueueCommand(
     success: true,
     url,
     id,
+  };
+}
+
+/**
+ * Run the `ob summary` command
+ *
+ * @param url - URL to summarize
+ * @param options - Context and runner options
+ * @returns Promise that resolves with summary result
+ */
+export async function runSummaryCommand(
+  url: string,
+  options: RunnerOptions = {}
+): Promise<SummaryResult> {
+  const { stdoutIterator, exitPromise } = runCliSubprocess(
+    "summary",
+    [url],
+    options
+  );
+
+  const stdoutLines: string[] = [];
+  for await (const line of stdoutIterator) {
+    stdoutLines.push(line);
+  }
+
+  const { exitCode, stderr } = await exitPromise;
+
+  if (exitCode !== 0) {
+    return {
+      success: false,
+      url,
+      error: stderr.trim() || `CLI exited with code ${exitCode}`,
+    };
+  }
+
+  const summary = stdoutLines.join("\n").trim();
+  if (!summary) {
+    return {
+      success: false,
+      url,
+      error: "No summary output received",
+    };
+  }
+
+  return {
+    success: true,
+    url,
+    summary,
   };
 }
 

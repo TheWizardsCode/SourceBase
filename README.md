@@ -76,6 +76,11 @@ See [Local Setup](#local-setup) below for detailed instructions.
    - `YOUTUBE_CAPTION_LANGUAGE` - Preferred caption language (default: `en`)
    - `ENABLE_YOUTUBE_CAPTIONS` - Enable/disable captions (default: `true`)
 
+   Optional (for summary posting in Discord threads):
+   - `SEND_SUMMARY_ON_INSERT` - Post generated summary after successful `ob add` (default: `true`)
+   - `DEFAULT_DISCORD_CHANNEL_ID` - Fallback channel if thread posting is not available
+   - `OPENBRAIN_ITEM_URL_TEMPLATE` - Template for OpenBrain item link in summary messages, supports `{id}` and `{url}` placeholders
+
 4. **Set up the database:**
 
    ```bash
@@ -230,19 +235,28 @@ $ sb add --ndjson https://example.com/article
 **Webhook Events:**
 When using `--format webhook`, each progress event is POSTed as JSON to the provided URL. The webhook receives the same JSON structure as NDJSON output.
 
-### Context Flags for Bot Integration
+### Context Tags for Bot Integration
 
-When the Discord bot invokes the CLI, it passes context via flags:
+When the Discord bot invokes OpenBrain CLI commands, it passes Discord context as metadata tags:
 
 ```bash
-sb add \
-  --channel-id "123456789" \
-  --message-id "987654321" \
-  --author-id "111222333" \
+ob add \
+  --tag "discord_channel_id:123456789" \
+  --tag "discord_message_id:987654321" \
+  --tag "discord_author_id:111222333" \
   https://example.com/article
 ```
 
-These flags associate the operation with Discord entities but are optional for standalone CLI usage.
+These tags associate operations with Discord entities for traceability while remaining valid OpenBrain CLI arguments.
+
+### Automatic Summary Posting
+
+After a successful URL add, the bot can call `ob summary <url>` and post the generated summary into the processing thread (or a configured fallback channel).
+
+- Retries summary generation up to 3 times with exponential backoff
+- Includes metadata in the message: OpenBrain item link, source URL, item id, author, timestamp
+- Uses item-id deduplication in-process to avoid posting duplicate summaries
+- Posts a manual-review notice if summary generation fails after retries
 
 ### Global Options
 

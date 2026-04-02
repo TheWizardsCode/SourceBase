@@ -100,6 +100,16 @@ export function createSpawnMockNdjson(stdoutObjects: unknown[]): { mockSpawn: (e
   return { mockSpawn, spawnCalls };
 }
 
+export function createSpawnMockSummary(stdoutLines: string[]): { mockSpawn: (exe: string, args: string[], opts: any) => ChildProcess; spawnCalls: SpawnCall[] } {
+  const spawnCalls: SpawnCall[] = [];
+  const mockSpawn = (exe: string, args: string[], opts: any) => {
+    spawnCalls.push({ exe, args, opts });
+    const child = makeFakeChild({ stdoutLines, exitCode: 0 });
+    return child;
+  };
+  return { mockSpawn, spawnCalls };
+}
+
 export function createSpawnMockInvalidThenValid(invalidLine: string, validObject: unknown) {
   const spawnCalls: SpawnCall[] = [];
   const mockSpawn = (exe: string, args: string[], opts: any) => {

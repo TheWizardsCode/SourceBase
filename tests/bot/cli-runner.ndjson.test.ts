@@ -18,7 +18,13 @@ describe("runAddCommand NDJSON parsing", () => {
     const helper = await import("../helpers/mockCliSpawn.js");
     const { mockSpawn } = helper.createSpawnMockNdjson([
       { phase: "downloading", url: "https://x.example" },
-      { phase: "completed", url: "https://x.example", title: "Page Title" },
+      {
+        phase: "completed",
+        url: "https://x.example",
+        title: "Page Title",
+        id: 42,
+        timestamp: "2026-04-02T15:00:00.000Z",
+      },
     ]);
     await helper.doMockChildProcess(vi, mockSpawn);
 
@@ -48,6 +54,8 @@ describe("runAddCommand NDJSON parsing", () => {
     expect(result).toBeDefined();
     expect(result!.success).toBe(true);
     expect(result!.title).toBe("Page Title");
+    expect(result!.id).toBe(42);
+    expect(result!.timestamp).toBe("2026-04-02T15:00:00.000Z");
   });
 
   it("ignores invalid NDJSON lines and still returns result", async () => {

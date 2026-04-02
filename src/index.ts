@@ -3,7 +3,15 @@ import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
 import { isLikelyContentQuery } from "./query/detector.js";
-import { runAddCommand, runQueueCommand, isCliAvailable, CliRunnerError, type AddProgressEvent, type AddResult } from "./bot/cli-runner.js";
+import {
+  runAddCommand,
+  runQueueCommand,
+  runSummaryCommand,
+  isCliAvailable,
+  CliRunnerError,
+  type AddProgressEvent,
+  type AddResult,
+} from "./bot/cli-runner.js";
 
 // ============================================================================
 // Logger
@@ -61,6 +69,222 @@ const CLI_UNAVAILABLE_MESSAGE = "⚠️ OpenBrain CLI is not available. Please e
 const PROCESSING_REACTION = "👀";
 const SUCCESS_REACTION = "✅";
 const FAILURE_REACTION = "⚠️";
+const SUMMARY_RETRY_ATTEMPTS = 3;
+const SUMMARY_RETRY_BASE_DELAY_MS = process.env.NODE_ENV === "test" ? 1 : 500;
+
+type SendableTarget = {
+  id: string;
+  send: (content: string) => Promise<unknown>;
+};
+
+const postedSummaryMarkers = new Set<string>();
+const manualReviewSummaryMarkers = new Set<string>();
+
+function getSummaryMarker(url: string, itemId?: number): string {
+  return itemId !== undefined ? `item:${itemId}` : `url:${url}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function buildOpenBrainItemLink(itemId: number | undefined, sourceUrl: string): string {
+  const template = config.OPENBRAIN_ITEM_URL_TEMPLATE?.trim();
+
+  if (!template) {
+    return sourceUrl;
+  }
+
+  return template
+    .replaceAll("{id}", itemId !== undefined ? String(itemId) : "")
+    .replaceAll("{url}", encodeURIComponent(sourceUrl));
+}
+
+function formatSummaryMessage(params: {
+  summary: string;
+  itemId?: number;
+  sourceUrl: string;
+  authorId: string;
+  timestamp?: string;
+  itemLink: string;
+}): string {
+  const {
+    summary,
+    itemId,
+    sourceUrl,
+    authorId,
+    timestamp,
+    itemLink,
+  } = params;
+
+  return [
+    "🧾 OpenBrain summary",
+    "",
+    summary,
+    "",
+    `OpenBrain item: <${itemLink}>`,
+    `Source URL: <${sourceUrl}>`,
+    `Item ID: ${itemId !== undefined ? itemId : "unknown"}`,
+    `Author: <@${authorId}>`,
+    `Timestamp: ${timestamp || new Date().toISOString()}`,
+  ].join("\n");
+}
+
+async function resolveSummaryTarget(
+  message: Message,
+  preferredThread: ThreadChannel | null
+): Promise<SendableTarget | null> {
+  if (preferredThread) {
+    return preferredThread as unknown as SendableTarget;
+  }
+
+  const fallbackChannelId = config.DEFAULT_DISCORD_CHANNEL_ID?.trim();
+  if (fallbackChannelId) {
+    try {
+      const fallbackChannel = await message.client.channels.fetch(fallbackChannelId);
+      if (fallbackChannel && typeof (fallbackChannel as any).send === "function") {
+        return fallbackChannel as unknown as SendableTarget;
+      }
+
+      logger.warn("Configured default summary channel is not sendable", {
+        channelId: fallbackChannelId,
+        messageId: message.id,
+      });
+    } catch (error) {
+      logger.warn("Failed to resolve configured default summary channel", {
+        channelId: fallbackChannelId,
+        messageId: message.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (typeof (message.channel as any).send === "function") {
+    return message.channel as unknown as SendableTarget;
+  }
+
+  return null;
+}
+
+async function generateSummaryWithRetry(url: string, context: {
+  channelId: string;
+  messageId: string;
+  authorId: string;
+}): Promise<{ success: true; summary: string } | { success: false; error: string }> {
+  let lastError = "Unknown summary generation error";
+
+  for (let attempt = 1; attempt <= SUMMARY_RETRY_ATTEMPTS; attempt++) {
+    const result = await runSummaryCommand(url, context);
+    if (result.success && result.summary) {
+      return { success: true, summary: result.summary };
+    }
+
+    lastError = result.error || "Summary command returned no output";
+
+    if (attempt < SUMMARY_RETRY_ATTEMPTS) {
+      const delayMs = SUMMARY_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+      await sleep(delayMs);
+    }
+  }
+
+  return { success: false, error: lastError };
+}
+
+async function sendGeneratedSummary(
+  message: Message,
+  preferredThread: ThreadChannel | null,
+  addResult: AddResult
+): Promise<void> {
+  if (!config.SEND_SUMMARY_ON_INSERT) {
+    return;
+  }
+
+  const marker = getSummaryMarker(addResult.url, addResult.id);
+  if (postedSummaryMarkers.has(marker)) {
+    logger.info("Summary already posted for item, skipping duplicate", {
+      messageId: message.id,
+      url: addResult.url,
+      itemId: addResult.id,
+    });
+    return;
+  }
+
+  const target = await resolveSummaryTarget(message, preferredThread);
+  if (!target) {
+    logger.warn("No sendable target available for summary message", {
+      messageId: message.id,
+      url: addResult.url,
+      itemId: addResult.id,
+    });
+    return;
+  }
+
+  const summaryResult = await generateSummaryWithRetry(addResult.url, {
+    channelId: message.channelId,
+    messageId: message.id,
+    authorId: message.author.id,
+  });
+
+  if (!summaryResult.success) {
+    manualReviewSummaryMarkers.add(marker);
+    logger.error("Failed to generate summary after retries; marked for manual review", {
+      messageId: message.id,
+      targetId: target.id,
+      url: addResult.url,
+      itemId: addResult.id,
+      error: summaryResult.error,
+    });
+
+    try {
+      await target.send(
+        `⚠️ Failed to generate summary for <${addResult.url}> after ${SUMMARY_RETRY_ATTEMPTS} attempts. Marked for manual review.`
+      );
+    } catch (error) {
+      logger.warn("Failed to send summary failure notice", {
+        messageId: message.id,
+        targetId: target.id,
+        url: addResult.url,
+        itemId: addResult.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
+
+  const summaryMessage = formatSummaryMessage({
+    summary: summaryResult.summary,
+    itemId: addResult.id,
+    sourceUrl: addResult.url,
+    authorId: message.author.id,
+    timestamp: addResult.timestamp,
+    itemLink: buildOpenBrainItemLink(addResult.id, addResult.url),
+  });
+
+  try {
+    await target.send(summaryMessage);
+    postedSummaryMarkers.add(marker);
+    manualReviewSummaryMarkers.delete(marker);
+
+    logger.info("Posted generated summary to Discord", {
+      messageId: message.id,
+      targetId: target.id,
+      url: addResult.url,
+      itemId: addResult.id,
+      marker,
+    });
+  } catch (error) {
+    logger.error("Failed to post generated summary", {
+      messageId: message.id,
+      targetId: target.id,
+      url: addResult.url,
+      itemId: addResult.id,
+      marker,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 /**
  * Add a reaction to a message
@@ -313,16 +537,17 @@ async function processUrlWithProgress(
         const displayName = finalResult.title ? `\`${finalResult.title}\`` : `\`${url}\``;
         const successMsg = `✅ Added: ${displayName}`;
 
+        let summaryTargetThread: ThreadChannel | null = thread;
+
         if (thread) {
           try {
             await thread.send(successMsg);
-            // Archive the thread after successful completion
-            await thread.setArchived(true);
           } catch (error) {
             logger.warn("Failed to send final success message to thread; falling back to channel reply", {
               threadId: thread.id,
               error: error instanceof Error ? error.message : String(error),
             });
+            summaryTargetThread = null;
             // Fallback to channel reply
             try {
               await message.reply(successMsg);
@@ -336,6 +561,20 @@ async function processUrlWithProgress(
         } else {
           // Fallback to message reply if no thread
           await message.reply(successMsg);
+        }
+
+        await sendGeneratedSummary(message, summaryTargetThread, finalResult);
+
+        if (summaryTargetThread) {
+          try {
+            await summaryTargetThread.setArchived(true);
+          } catch (error) {
+            logger.warn("Failed to archive thread after summary posting", {
+              threadId: summaryTargetThread.id,
+              messageId: message.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
       } else {
         // Remove processing reaction and add failure reaction

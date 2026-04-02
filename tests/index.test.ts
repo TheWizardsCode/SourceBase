@@ -121,6 +121,11 @@ describe("index message handler integration", () => {
         return {
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(async (url: string) => ({
+            success: true,
+            url,
+            summary: "Mock summary",
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -160,6 +165,11 @@ describe("index message handler integration", () => {
         return {
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(async (url: string) => ({
+            success: true,
+            url,
+            summary: "Mock summary",
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -203,6 +213,11 @@ describe("index message handler integration", () => {
         return {
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(async (url: string) => ({
+            success: true,
+            url,
+            summary: "Mock summary",
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -243,6 +258,11 @@ describe("index message handler integration", () => {
         return {
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(async (url: string) => ({
+            success: true,
+            url,
+            summary: "Mock summary",
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -296,6 +316,11 @@ describe("index message handler integration", () => {
         return {
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(async (url: string) => ({
+            success: true,
+            url,
+            summary: "Mock summary",
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -314,7 +339,7 @@ describe("index message handler integration", () => {
     expect(threadMessages).toContain("✅ Added: `Useful Title`");
   });
 
-  it("passes context flags to spawn for ob add", async () => {
+  it("passes Discord context tags to spawn for ob add", async () => {
     const spawnCalls: Array<{ exe: string; args: string[]; opts: unknown }> = [];
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
@@ -347,17 +372,209 @@ describe("index message handler integration", () => {
     expect(addCall).toBeDefined();
 
     const addArgs = addCall!.args;
-    const channelIdx = addArgs.indexOf("--channel-id");
-    const messageIdx = addArgs.indexOf("--message-id");
-    const authorIdx = addArgs.indexOf("--author-id");
+    const tagValues: string[] = [];
+    for (let i = 0; i < addArgs.length - 1; i++) {
+      if (addArgs[i] === "--tag") {
+        tagValues.push(addArgs[i + 1]);
+      }
+    }
 
-    expect(channelIdx).toBeGreaterThan(-1);
-    expect(messageIdx).toBeGreaterThan(-1);
-    expect(authorIdx).toBeGreaterThan(-1);
-
-    expect(addArgs[channelIdx + 1]).toBe("channel-xyz");
-    expect(addArgs[messageIdx + 1]).toBe("message-xyz");
-    expect(addArgs[authorIdx + 1]).toBe("author-xyz");
+    expect(tagValues).toContain("discord_channel_id:channel-xyz");
+    expect(tagValues).toContain("discord_message_id:message-xyz");
+    expect(tagValues).toContain("discord_author_id:author-xyz");
     expect(addArgs).toContain("https://ctx.example/item");
+  });
+
+  it("posts generated summary to the processing thread after successful add", async () => {
+    const runAddCommandMock = vi.fn((url: string, _options?: RunnerOptions) =>
+      createAddGenerator(
+        [
+          { phase: "downloading", url },
+          {
+            phase: "completed",
+            url,
+            title: "Useful Title",
+            id: 55,
+            timestamp: "2026-04-02T15:00:00.000Z",
+          },
+        ],
+        {
+          success: true,
+          url,
+          title: "Useful Title",
+          id: 55,
+          timestamp: "2026-04-02T15:00:00.000Z",
+        }
+      )
+    );
+
+    const runSummaryCommandMock = vi.fn(async (url: string) => ({
+      success: true,
+      url,
+      summary: "A concise generated summary.",
+    }));
+
+    const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
+      await vi.doMock("../src/bot/cli-runner.js", () => {
+        class MockCliRunnerError extends Error {
+          exitCode: number;
+          stderr: string;
+
+          constructor(message: string, exitCode = -1, stderr = "") {
+            super(message);
+            this.name = "CliRunnerError";
+            this.exitCode = exitCode;
+            this.stderr = stderr;
+          }
+        }
+
+        return {
+          runAddCommand: runAddCommandMock,
+          runQueueCommand: vi.fn(),
+          runSummaryCommand: runSummaryCommandMock,
+          isCliAvailable: vi.fn(async () => true),
+          CliRunnerError: MockCliRunnerError,
+        };
+      });
+    });
+
+    const { message, thread, threadMessages } = createFakeMessage("https://example.com/article");
+    await onMonitoredMessage(message);
+
+    expect(runSummaryCommandMock).toHaveBeenCalledWith("https://example.com/article", {
+      channelId: "channel-1",
+      messageId: "message-1",
+      authorId: "author-1",
+    });
+
+    const summaryMessage = threadMessages.find((m) => m.includes("🧾 OpenBrain summary"));
+    expect(summaryMessage).toBeDefined();
+    expect(summaryMessage).toContain("A concise generated summary.");
+    expect(summaryMessage).toContain("OpenBrain item: <https://example.com/article>");
+    expect(summaryMessage).toContain("Source URL: <https://example.com/article>");
+    expect(summaryMessage).toContain("Item ID: 55");
+    expect(summaryMessage).toContain("Author: <@author-1>");
+    expect(summaryMessage).toContain("Timestamp: 2026-04-02T15:00:00.000Z");
+    expect(thread.setArchived).toHaveBeenCalledWith(true);
+  });
+
+  it("retries summary generation three times then marks for manual review", async () => {
+    const runAddCommandMock = vi.fn((url: string, _options?: RunnerOptions) =>
+      createAddGenerator(
+        [
+          { phase: "downloading", url },
+          { phase: "completed", url, title: "Useful Title", id: 91 },
+        ],
+        {
+          success: true,
+          url,
+          title: "Useful Title",
+          id: 91,
+        }
+      )
+    );
+
+    const runSummaryCommandMock = vi.fn(async (url: string) => ({
+      success: false,
+      url,
+      error: "summary command failed",
+    }));
+
+    const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
+      await vi.doMock("../src/bot/cli-runner.js", () => {
+        class MockCliRunnerError extends Error {
+          exitCode: number;
+          stderr: string;
+
+          constructor(message: string, exitCode = -1, stderr = "") {
+            super(message);
+            this.name = "CliRunnerError";
+            this.exitCode = exitCode;
+            this.stderr = stderr;
+          }
+        }
+
+        return {
+          runAddCommand: runAddCommandMock,
+          runQueueCommand: vi.fn(),
+          runSummaryCommand: runSummaryCommandMock,
+          isCliAvailable: vi.fn(async () => true),
+          CliRunnerError: MockCliRunnerError,
+        };
+      });
+    });
+
+    const { message, threadMessages } = createFakeMessage("https://example.com/article");
+    await onMonitoredMessage(message);
+
+    expect(runSummaryCommandMock).toHaveBeenCalledTimes(3);
+    const manualReviewMessage = threadMessages.find((m) =>
+      m.includes("Failed to generate summary for <https://example.com/article> after 3 attempts")
+    );
+    expect(manualReviewMessage).toBeDefined();
+  });
+
+  it("does not post duplicate summaries for the same item", async () => {
+    const runAddCommandMock = vi.fn((url: string, _options?: RunnerOptions) =>
+      createAddGenerator(
+        [
+          { phase: "downloading", url },
+          { phase: "completed", url, title: "Useful Title", id: 777 },
+        ],
+        {
+          success: true,
+          url,
+          title: "Useful Title",
+          id: 777,
+        }
+      )
+    );
+
+    const runSummaryCommandMock = vi.fn(async (url: string) => ({
+      success: true,
+      url,
+      summary: "Summary once",
+    }));
+
+    const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
+      await vi.doMock("../src/bot/cli-runner.js", () => {
+        class MockCliRunnerError extends Error {
+          exitCode: number;
+          stderr: string;
+
+          constructor(message: string, exitCode = -1, stderr = "") {
+            super(message);
+            this.name = "CliRunnerError";
+            this.exitCode = exitCode;
+            this.stderr = stderr;
+          }
+        }
+
+        return {
+          runAddCommand: runAddCommandMock,
+          runQueueCommand: vi.fn(),
+          runSummaryCommand: runSummaryCommandMock,
+          isCliAvailable: vi.fn(async () => true),
+          CliRunnerError: MockCliRunnerError,
+        };
+      });
+    });
+
+    const first = createFakeMessage("https://duplicate.example/path", {
+      messageId: "m-1",
+    });
+    const second = createFakeMessage("https://duplicate.example/path", {
+      messageId: "m-2",
+    });
+
+    await onMonitoredMessage(first.message);
+    await onMonitoredMessage(second.message);
+
+    expect(runSummaryCommandMock).toHaveBeenCalledTimes(1);
+
+    const firstSummary = first.threadMessages.find((m) => m.includes("🧾 OpenBrain summary"));
+    const secondSummary = second.threadMessages.find((m) => m.includes("🧾 OpenBrain summary"));
+    expect(firstSummary).toBeDefined();
+    expect(secondSummary).toBeUndefined();
   });
 });

@@ -173,19 +173,27 @@ async function generateSummaryWithRetry(url: string, context: {
   channelId: string;
   messageId: string;
   authorId: string;
+  timeoutMs?: number;
+  maxAttempts?: number;
+  retryBaseDelayMs?: number;
 }): Promise<{ success: true; summary: string } | { success: false; error: string }> {
+  const maxAttempts = Math.max(1, context.maxAttempts ?? SUMMARY_RETRY_ATTEMPTS);
+  const retryBaseDelayMs = Math.max(1, context.retryBaseDelayMs ?? SUMMARY_RETRY_BASE_DELAY_MS);
   let lastError = "Unknown summary generation error";
 
-  for (let attempt = 1; attempt <= SUMMARY_RETRY_ATTEMPTS; attempt++) {
-    const result = await runSummaryCommand(url, context);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const result = await runSummaryCommand(url, {
+      ...context,
+      timeoutMs: context.timeoutMs,
+    });
     if (result.success && result.summary) {
       return { success: true, summary: result.summary };
     }
 
     lastError = result.error || "Summary command returned no output";
 
-    if (attempt < SUMMARY_RETRY_ATTEMPTS) {
-      const delayMs = SUMMARY_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+    if (attempt < maxAttempts) {
+      const delayMs = retryBaseDelayMs * Math.pow(2, attempt - 1);
       await sleep(delayMs);
     }
   }
@@ -950,20 +958,9 @@ const bot = new DiscordBot({
           return;
         }
 
-        // Start a thread off the original bot reply and post each result as a message
-        // in the thread. Update the thread title to reflect progress and final state.
-        try {
-          // Post formatted results into the original reply so tests and users
-          // who do not support threads still see the results. Keep the
-          // existing thread/posting behaviour below for environments that
-          // support threads; this editReply acts as the primary visible
-          // result container.
-          const resultLines = parsed.map((p) => `[${escapeTitle(p.title)}](${p.url})`);
-          const resultsContent = `✅ Search results for '${query}':\n\n${resultLines.join("\n\n")}`;
-          await interaction.editReply(resultsContent);
-        } catch {
-          // ignore
-        }
+        // Start a thread off the original bot reply and post each result as a
+        // message in the thread. If thread creation is unavailable, fall back
+        // to in-channel output.
 
         let parentMsg: Message | null = null;
         try {
@@ -973,9 +970,10 @@ const bot = new DiscordBot({
         }
 
         let thread: ThreadChannel | null = null;
+        const searchingThreadName = `Searching: '${query}' (0/${parsed.length})`;
         if (parentMsg && typeof (parentMsg as any).startThread === "function") {
           try {
-            thread = await (parentMsg as any).startThread({ name: `Searching: '${query}'`, autoArchiveDuration: 60 });
+            thread = await (parentMsg as any).startThread({ name: searchingThreadName, autoArchiveDuration: 60 });
           } catch (err) {
             logger.warn("Failed to start thread from reply", { error: err instanceof Error ? err.message : String(err) });
           }
@@ -985,7 +983,15 @@ const bot = new DiscordBot({
           try {
             const chAny = interaction.channel as any;
             if (chAny && chAny.threads && typeof chAny.threads.create === "function") {
-              thread = await chAny.threads.create({ name: `Searching: '${query}'`, autoArchiveDuration: 60 });
+              if (parentMsg && parentMsg.id) {
+                thread = await chAny.threads.create({
+                  name: searchingThreadName,
+                  autoArchiveDuration: 60,
+                  startMessage: parentMsg.id,
+                });
+              } else {
+                thread = await chAny.threads.create({ name: searchingThreadName, autoArchiveDuration: 60 });
+              }
             }
           } catch (err) {
             logger.warn("Failed to create thread on channel; will post results in-channel instead", { error: err instanceof Error ? err.message : String(err) });
@@ -993,7 +999,20 @@ const bot = new DiscordBot({
           }
         }
 
+        const resultLines = parsed.map((p) => `[${escapeTitle(p.title)}](${p.url})`);
+        try {
+          if (thread) {
+            await interaction.editReply(`✅ Search results for '${query}' are being posted in thread <#${thread.id}>.`);
+          } else {
+            const resultsContent = `✅ Search results for '${query}':\n\n${resultLines.join("\n\n")}`;
+            await interaction.editReply(resultsContent);
+          }
+        } catch {
+          // ignore
+        }
+
         let postedCount = 0;
+        const summaryTasks: Promise<void>[] = [];
         for (const p of parsed) {
           // Post a lightweight placeholder message quickly so the UI reflects
           // progress immediately. Generate the (potentially slow) summary in
@@ -1002,7 +1021,19 @@ const bot = new DiscordBot({
           // subsequent results (which was causing the UI to "stall" at the
           // third item).
           const title = escapeTitle(p.title);
-          const placeholderBody = `**${title}**\n\n_Generating summary..._\n\n<${p.url}>`;
+          const formatSearchResultBody = (titleText: string, summaryText: string, urlText: string): string => {
+            const header = `**${titleText}**\n\n`;
+            const footer = `\n\n<${urlText}>`;
+            const maxContentLength = 1900;
+            const budget = Math.max(0, maxContentLength - header.length - footer.length);
+            let body = summaryText;
+            if (body.length > budget) {
+              body = `${body.slice(0, Math.max(0, budget - 3)).trimEnd()}...`;
+            }
+            return `${header}${body}${footer}`;
+          };
+
+          const placeholderBody = formatSearchResultBody(title, "_Generating summary..._", p.url);
 
           let postedMessage: any = null;
           try {
@@ -1024,56 +1055,98 @@ const bot = new DiscordBot({
           }
 
           postedCount++;
-          try {
-            if (thread) await thread.setName(`Searching: '${query}' (${postedCount}/${parsed.length})`);
-          } catch {
-            // ignore
-          }
 
           // Kick off summary generation in background so slow summaries don't
-          // block the main loop. We intentionally do not await this Promise.
-          (async () => {
+          // block the main loop. We track tasks to set the final thread title
+          // once all summaries have completed.
+          const task = (async () => {
             let summaryResult: { success: true; summary: string } | { success: false; error: string };
             try {
               summaryResult = await generateSummaryWithRetry(p.url, {
                 channelId: interaction.channelId ?? "",
                 messageId: String(interaction.id),
                 authorId: interaction.user?.id ?? "",
+                timeoutMs: 20000,
+                maxAttempts: 1,
               });
             } catch (err) {
               summaryResult = { success: false, error: String(err) };
             }
 
             const summaryText = summaryResult.success ? summaryResult.summary : `*Summary generation failed: ${summaryResult.error}*`;
-            const safeSummary = summaryText.length > 3900 ? summaryText.slice(0, 3900) + "..." : summaryText;
+            const updatedBody = formatSearchResultBody(title, summaryText, p.url);
 
-            const updatedBody = `**${title}**\n\n${safeSummary}\n\n<${p.url}>`;
+            let posted = false;
 
             try {
               if (postedMessage && typeof postedMessage.edit === "function") {
                 await postedMessage.edit(updatedBody);
-              } else if (thread) {
-                await thread.send(updatedBody);
-              } else if (typeof interaction.followUp === "function") {
-                await interaction.followUp({ content: updatedBody } as any);
+                posted = true;
               }
             } catch (err) {
-              logger.warn("Failed to post search result summary", { error: err instanceof Error ? err.message : String(err) });
+              logger.warn("Failed to edit placeholder with search result summary", {
+                error: err instanceof Error ? err.message : String(err),
+                url: p.url,
+              });
+            }
+
+            if (!posted) {
+              try {
+                if (thread) {
+                  await thread.send(updatedBody);
+                  posted = true;
+                } else if (typeof interaction.followUp === "function") {
+                  await interaction.followUp({ content: updatedBody } as any);
+                  posted = true;
+                }
+              } catch (err) {
+                logger.warn("Failed to post search result summary fallback", {
+                  error: err instanceof Error ? err.message : String(err),
+                  url: p.url,
+                });
+              }
+            }
+
+            if (!posted && postedMessage && typeof postedMessage.edit === "function") {
+              try {
+                await postedMessage.edit(formatSearchResultBody(title, "*Summary unavailable right now. Please run `ob summary <url>` manually for this item.*", p.url));
+              } catch {
+                // ignore
+              }
             }
           })();
+          summaryTasks.push(task);
+
+          // Best-effort, non-blocking progress title update. Do not await this
+          // call in the loop because Discord thread rename throttling can
+          // otherwise delay summary generation and make placeholders appear
+          // stuck at "Generating summary...".
+          if (thread) {
+            void thread.setName(`Searching: '${query}' (${postedCount}/${parsed.length})`).catch(() => {
+              // ignore
+            });
+          }
         }
 
-        try {
-          if (thread) await thread.setName(`Search results for '${query}':`);
-        } catch {
-          // ignore
-        }
+        void (async () => {
+          await Promise.allSettled(summaryTasks);
 
-        try {
-          await interaction.editReply(`✅ Search results for '${query}':`);
-        } catch {
-          // ignore
-        }
+          try {
+            if (thread) {
+              await thread.setName(`Search results for '${query}':`);
+            }
+          } catch {
+            // ignore
+          }
+
+          try {
+            if (!thread) {
+              await interaction.editReply(`✅ Search results for '${query}':`);
+            }
+          } catch {
+            // ignore
+          }
+        })();
       } catch (error) {
         if (error instanceof CliRunnerError) {
           await interaction.reply({ content: "⚠️ Search failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });

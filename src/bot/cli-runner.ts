@@ -179,7 +179,13 @@ const SIGKILL_TIMEOUT_MS = 5000;
  */
 function trackChildProcess(child: ChildProcess): void {
   activeChildProcesses.add(child);
+  // Remove child from tracking when it exits or emits an error to avoid
+  // leaking references to failed/spawned processes (prevents orphaned
+  // processes remaining in the activeChildProcesses set).
   child.on("exit", () => {
+    activeChildProcesses.delete(child);
+  });
+  child.on("error", () => {
     activeChildProcesses.delete(child);
   });
 }

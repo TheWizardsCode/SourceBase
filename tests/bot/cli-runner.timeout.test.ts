@@ -10,6 +10,7 @@ describe("runAddCommand timeout handling", () => {
   afterEach(async () => {
     const mod = await import("../../src/bot/cli-runner.js");
     await mod.terminateAllChildProcesses();
+    expect(mod.getActiveChildProcessCount()).toBe(0);
   });
 
   it("should reject with CliRunnerError when subprocess exceeds timeout and kill is invoked", async () => {

@@ -970,7 +970,7 @@ const bot = new DiscordBot({
         }
 
         let thread: ThreadChannel | null = null;
-        const searchingThreadName = `Searching: '${query}' (0/${parsed.length})`;
+        const searchingThreadName = `Searching for '${query}'...`;
         if (parentMsg && typeof (parentMsg as any).startThread === "function") {
           try {
             thread = await (parentMsg as any).startThread({ name: searchingThreadName, autoArchiveDuration: 60 });
@@ -1011,55 +1011,7 @@ const bot = new DiscordBot({
           // ignore
         }
 
-        let completedCount = 0;
         const summaryTasks: Promise<void>[] = [];
-
-        let pendingThreadName: string | null = null;
-        let threadRenameLoopRunning = false;
-        let threadRenameWaiters: Array<() => void> = [];
-
-        const queueThreadNameUpdate = (name: string): void => {
-          if (!thread) return;
-          pendingThreadName = name;
-          if (threadRenameLoopRunning) return;
-
-          threadRenameLoopRunning = true;
-          void (async () => {
-            while (pendingThreadName) {
-              const nextName = pendingThreadName;
-              pendingThreadName = null;
-
-              try {
-                await thread!.setName(nextName);
-              } catch (err) {
-                logger.warn("Failed to update search thread name", {
-                  error: err instanceof Error ? err.message : String(err),
-                  name: nextName,
-                });
-              }
-
-              if (pendingThreadName) {
-                await sleep(1100);
-              }
-            }
-
-            threadRenameLoopRunning = false;
-            const waiters = threadRenameWaiters;
-            threadRenameWaiters = [];
-            for (const resolve of waiters) {
-              resolve();
-            }
-          })();
-        };
-
-        const waitForThreadNameUpdates = async (): Promise<void> => {
-          if (!thread || (!threadRenameLoopRunning && !pendingThreadName)) {
-            return;
-          }
-          await new Promise<void>((resolve) => {
-            threadRenameWaiters.push(resolve);
-          });
-        };
 
         for (const p of parsed) {
           // Post a lightweight placeholder message quickly so the UI reflects
@@ -1161,8 +1113,6 @@ const bot = new DiscordBot({
               }
             }
 
-            completedCount++;
-            queueThreadNameUpdate(`Searching: '${query}' (${completedCount}/${parsed.length})`);
           })();
           summaryTasks.push(task);
         }
@@ -1172,8 +1122,7 @@ const bot = new DiscordBot({
 
           try {
             if (thread) {
-              queueThreadNameUpdate(`Search results for '${query}'`);
-              await waitForThreadNameUpdates();
+              await thread.setName(`Search results for '${query}'`);
             }
           } catch {
             // ignore

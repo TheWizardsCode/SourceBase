@@ -1011,8 +1011,56 @@ const bot = new DiscordBot({
           // ignore
         }
 
-        let postedCount = 0;
+        let completedCount = 0;
         const summaryTasks: Promise<void>[] = [];
+
+        let pendingThreadName: string | null = null;
+        let threadRenameLoopRunning = false;
+        let threadRenameWaiters: Array<() => void> = [];
+
+        const queueThreadNameUpdate = (name: string): void => {
+          if (!thread) return;
+          pendingThreadName = name;
+          if (threadRenameLoopRunning) return;
+
+          threadRenameLoopRunning = true;
+          void (async () => {
+            while (pendingThreadName) {
+              const nextName = pendingThreadName;
+              pendingThreadName = null;
+
+              try {
+                await thread!.setName(nextName);
+              } catch (err) {
+                logger.warn("Failed to update search thread name", {
+                  error: err instanceof Error ? err.message : String(err),
+                  name: nextName,
+                });
+              }
+
+              if (pendingThreadName) {
+                await sleep(1100);
+              }
+            }
+
+            threadRenameLoopRunning = false;
+            const waiters = threadRenameWaiters;
+            threadRenameWaiters = [];
+            for (const resolve of waiters) {
+              resolve();
+            }
+          })();
+        };
+
+        const waitForThreadNameUpdates = async (): Promise<void> => {
+          if (!thread || (!threadRenameLoopRunning && !pendingThreadName)) {
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            threadRenameWaiters.push(resolve);
+          });
+        };
+
         for (const p of parsed) {
           // Post a lightweight placeholder message quickly so the UI reflects
           // progress immediately. Generate the (potentially slow) summary in
@@ -1053,8 +1101,6 @@ const bot = new DiscordBot({
           } catch (err) {
             logger.warn("Failed to post search result placeholder", { error: err instanceof Error ? err.message : String(err) });
           }
-
-          postedCount++;
 
           // Kick off summary generation in background so slow summaries don't
           // block the main loop. We track tasks to set the final thread title
@@ -1114,18 +1160,11 @@ const bot = new DiscordBot({
                 // ignore
               }
             }
+
+            completedCount++;
+            queueThreadNameUpdate(`Searching: '${query}' (${completedCount}/${parsed.length})`);
           })();
           summaryTasks.push(task);
-
-          // Best-effort, non-blocking progress title update. Do not await this
-          // call in the loop because Discord thread rename throttling can
-          // otherwise delay summary generation and make placeholders appear
-          // stuck at "Generating summary...".
-          if (thread) {
-            void thread.setName(`Searching: '${query}' (${postedCount}/${parsed.length})`).catch(() => {
-              // ignore
-            });
-          }
         }
 
         void (async () => {
@@ -1133,7 +1172,8 @@ const bot = new DiscordBot({
 
           try {
             if (thread) {
-              await thread.setName(`Search results for '${query}':`);
+              queueThreadNameUpdate(`Search results for '${query}'`);
+              await waitForThreadNameUpdates();
             }
           } catch {
             // ignore

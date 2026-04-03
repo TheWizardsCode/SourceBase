@@ -995,31 +995,32 @@ const bot = new DiscordBot({
 
         let postedCount = 0;
         for (const p of parsed) {
-          let summaryResult: { success: true; summary: string } | { success: false; error: string };
-          try {
-            summaryResult = await generateSummaryWithRetry(p.url, {
-              channelId: interaction.channelId ?? "",
-              messageId: String(interaction.id),
-              authorId: interaction.user?.id ?? "",
-            });
-          } catch (err) {
-            summaryResult = { success: false, error: String(err) };
-          }
-
-          const summaryText = summaryResult.success ? summaryResult.summary : `*Summary generation failed: ${summaryResult.error}*`;
-          const safeSummary = summaryText.length > 3900 ? summaryText.slice(0, 3900) + "..." : summaryText;
-
+          // Post a lightweight placeholder message quickly so the UI reflects
+          // progress immediately. Generate the (potentially slow) summary in
+          // the background and update the posted message when ready. This
+          // prevents a slow summary generation from blocking the posting of
+          // subsequent results (which was causing the UI to "stall" at the
+          // third item).
           const title = escapeTitle(p.title);
-          const body = `**${title}**\n\n${safeSummary}\n\n<${p.url}>`;
+          const placeholderBody = `**${title}**\n\n_Generating summary..._\n\n<${p.url}>`;
 
+          let postedMessage: any = null;
           try {
             if (thread) {
-              await thread.send(body);
+              postedMessage = await thread.send(placeholderBody);
+            } else if (typeof interaction.followUp === "function") {
+              postedMessage = await interaction.followUp({ content: placeholderBody } as any);
             } else {
-              await interaction.followUp({ content: body } as any);
+              // Fallback: post as an edit to the original reply if followUp
+              // is not available in this environment.
+              try {
+                await interaction.editReply(placeholderBody);
+              } catch {
+                // ignore
+              }
             }
           } catch (err) {
-            logger.warn("Failed to post search result", { error: err instanceof Error ? err.message : String(err) });
+            logger.warn("Failed to post search result placeholder", { error: err instanceof Error ? err.message : String(err) });
           }
 
           postedCount++;
@@ -1028,6 +1029,38 @@ const bot = new DiscordBot({
           } catch {
             // ignore
           }
+
+          // Kick off summary generation in background so slow summaries don't
+          // block the main loop. We intentionally do not await this Promise.
+          (async () => {
+            let summaryResult: { success: true; summary: string } | { success: false; error: string };
+            try {
+              summaryResult = await generateSummaryWithRetry(p.url, {
+                channelId: interaction.channelId ?? "",
+                messageId: String(interaction.id),
+                authorId: interaction.user?.id ?? "",
+              });
+            } catch (err) {
+              summaryResult = { success: false, error: String(err) };
+            }
+
+            const summaryText = summaryResult.success ? summaryResult.summary : `*Summary generation failed: ${summaryResult.error}*`;
+            const safeSummary = summaryText.length > 3900 ? summaryText.slice(0, 3900) + "..." : summaryText;
+
+            const updatedBody = `**${title}**\n\n${safeSummary}\n\n<${p.url}>`;
+
+            try {
+              if (postedMessage && typeof postedMessage.edit === "function") {
+                await postedMessage.edit(updatedBody);
+              } else if (thread) {
+                await thread.send(updatedBody);
+              } else if (typeof interaction.followUp === "function") {
+                await interaction.followUp({ content: updatedBody } as any);
+              }
+            } catch (err) {
+              logger.warn("Failed to post search result summary", { error: err instanceof Error ? err.message : String(err) });
+            }
+          })();
         }
 
         try {

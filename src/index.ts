@@ -714,6 +714,95 @@ async function suppressEmbedsIfPermitted(message: Message): Promise<boolean> {
 // ==========================================================================
 
 const DISCORD_CONTENT_LIMIT = 1900;
+const MARKDOWN_WRAP_WIDTH = 80;
+
+function wrapLineAtNearestSpace(line: string, width: number): string[] {
+  if (line.length <= width || width <= 0) {
+    return [line];
+  }
+
+  const bulletMatch = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+  const quoteMatch = line.match(/^(\s*>+\s*)(.*)$/);
+  const leadingWhitespace = line.match(/^\s*/)?.[0] ?? "";
+
+  let firstPrefix = leadingWhitespace;
+  let continuationPrefix = leadingWhitespace;
+  let remaining = line.slice(leadingWhitespace.length);
+
+  if (bulletMatch) {
+    const indent = bulletMatch[1];
+    const marker = bulletMatch[2];
+    firstPrefix = `${indent}${marker} `;
+    continuationPrefix = `${indent}${" ".repeat(marker.length + 1)}`;
+    remaining = bulletMatch[3];
+  } else if (quoteMatch) {
+    firstPrefix = quoteMatch[1];
+    continuationPrefix = quoteMatch[1];
+    remaining = quoteMatch[2];
+  }
+
+  const wrapped: string[] = [];
+  let isFirstLine = true;
+
+  while (remaining.length > 0) {
+    const prefix = isFirstLine ? firstPrefix : continuationPrefix;
+    const available = width - prefix.length;
+    if (available <= 0) {
+      wrapped.push(`${prefix}${remaining}`);
+      break;
+    }
+
+    if (remaining.length <= available) {
+      wrapped.push(`${prefix}${remaining}`);
+      break;
+    }
+
+    let splitIndex = remaining.lastIndexOf(" ", available);
+    if (splitIndex <= 0) {
+      splitIndex = remaining.indexOf(" ", available);
+      if (splitIndex === -1) {
+        wrapped.push(`${prefix}${remaining}`);
+        break;
+      }
+    }
+
+    const chunk = remaining.slice(0, splitIndex).trimEnd();
+    wrapped.push(`${prefix}${chunk}`);
+    remaining = remaining.slice(splitIndex).trimStart();
+    isFirstLine = false;
+  }
+
+  return wrapped.length > 0 ? wrapped : [line];
+}
+
+function wrapMarkdownText(content: string, width = MARKDOWN_WRAP_WIDTH): string {
+  const lines = content.split("\n");
+  const wrapped: string[] = [];
+  let inFencedCodeBlock = false;
+
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("```")) {
+      inFencedCodeBlock = !inFencedCodeBlock;
+      wrapped.push(line);
+      continue;
+    }
+
+    if (
+      inFencedCodeBlock ||
+      line.length <= width ||
+      /^\s*\|/.test(line) ||
+      /^\s*\[[^\]]+\]:\s+\S+/.test(line)
+    ) {
+      wrapped.push(line);
+      continue;
+    }
+
+    wrapped.push(...wrapLineAtNearestSpace(line, width));
+  }
+
+  return wrapped.join("\n");
+}
 
 function extractSummaryFromMarkdown(content: string, maxLen = 1500): string {
   // Try to extract a '## Summary' section (case-insensitive)
@@ -1151,8 +1240,14 @@ const bot = new DiscordBot({
     if (commandName === "briefing") {
       try {
         const query = interaction.options.getString("query", true);
+        const k = interaction.options.getInteger("k");
 
         await interaction.deferReply();
+
+        if (k !== null && (k < 1 || k > 50)) {
+          await interaction.editReply("⚠️ Briefing parameter `k` must be between 1 and 50.");
+          return;
+        }
 
         if (!(await isCliAvailable())) {
           await interaction.editReply("⚠️ Briefing failed because the OpenBrain CLI is unavailable.");
@@ -1160,6 +1255,10 @@ const bot = new DiscordBot({
         }
 
         const args = ["run", "--json", "--query", query];
+        if (k !== null) {
+          args.push("--k", String(k));
+        }
+
         const result = await runCliCommand("briefing", args, {
           channelId: interaction.channelId ?? undefined,
           messageId: undefined,
@@ -1190,6 +1289,8 @@ const bot = new DiscordBot({
         } catch {
           // keep raw text
         }
+
+        briefingText = wrapMarkdownText(briefingText, MARKDOWN_WRAP_WIDTH);
 
         await editReplyWithPossibleAttachment(
           interaction,

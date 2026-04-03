@@ -376,6 +376,15 @@ function runCliSubprocess(
   // Create promise that resolves when subprocess exits
   const exitPromise = new Promise<SubprocessResult>((resolve, reject) => {
     const timeout = setTimeout(() => {
+      // Close readline to ensure any for-await loops over stdoutIterator
+      // terminate promptly when the subprocess is being killed due to
+      // a timeout. This prevents the caller from being stuck waiting
+      // for stdout lines while the exit promise rejects.
+      try {
+        stdoutRl.close();
+      } catch {
+        /* ignore */
+      }
       subprocess.kill("SIGTERM");
       reject(
         new CliRunnerError(
@@ -396,6 +405,12 @@ function runCliSubprocess(
 
     subprocess.on("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timeout);
+      // Ensure readline is closed to unblock stdout iteration
+      try {
+        stdoutRl.close();
+      } catch {
+        /* ignore */
+      }
       // Capture spawn error details (ENOENT, EACCES, etc.) in stderrBuffer
       const code = error && (error as any).code ? (error as any).code : undefined;
       const errno = error && (error as any).errno ? (error as any).errno : undefined;

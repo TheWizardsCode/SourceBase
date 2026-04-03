@@ -1,4 +1,4 @@
-import { Client, Intents, TextChannel, ThreadChannel, type Message } from "discord.js";
+import { Client, Intents, TextChannel, ThreadChannel, MessageEmbed, type Message } from "discord.js";
 import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
@@ -701,6 +701,88 @@ async function suppressEmbedsIfPermitted(message: Message): Promise<boolean> {
   }
 }
 
+// ==========================================================================
+// Reply helper: summarize and attach large content
+// ==========================================================================
+
+const DISCORD_CONTENT_LIMIT = 1900;
+
+function extractSummaryFromMarkdown(content: string, maxLen = 1500): string {
+  // Try to extract a '## Summary' section (case-insensitive)
+  try {
+    const summaryRegex = /(^|\n)#{1,6}\s*summary\s*\n([\s\S]*?)(?=\n#{1,6}\s*\S|\n---|$)/i;
+    const m = content.match(summaryRegex);
+    if (m && m[2]) {
+      let s = m[2].trim();
+      if (s.length > maxLen) s = s.slice(0, maxLen).trim();
+      // Attempt to end at a sentence boundary
+      const lastPeriod = s.lastIndexOf('. ');
+      if (lastPeriod > Math.floor(maxLen / 2)) s = s.slice(0, lastPeriod + 1);
+      return s;
+    }
+  } catch {
+    // ignore regex engine issues
+  }
+
+  // Fallback: use the first paragraph
+  const paragraphs = content.split(/\n\s*\n/);
+  let first = (paragraphs[0] || '').trim();
+  if (!first && paragraphs.length > 1) first = (paragraphs[1] || '').trim();
+  if (first) {
+    if (first.length <= maxLen) return first;
+    // Truncate to a sentence boundary if possible
+    const truncated = first.slice(0, maxLen);
+    const lastPeriod = truncated.lastIndexOf('. ');
+    if (lastPeriod > 0) return truncated.slice(0, lastPeriod + 1);
+    return truncated;
+  }
+
+  // Final fallback: truncate to maxLen and end at last sentence
+  let truncated = content.slice(0, maxLen);
+  const lastPeriod = truncated.lastIndexOf('. ');
+  if (lastPeriod > 0) truncated = truncated.slice(0, lastPeriod + 1);
+  return truncated;
+}
+
+async function editReplyWithPossibleAttachment(
+  interaction: any,
+  headerLine: string,
+  content: string,
+  filename = "content.md"
+): Promise<void> {
+  const fullText = `${headerLine}\n\n${content}`;
+
+  if (fullText.length <= DISCORD_CONTENT_LIMIT) {
+    await interaction.editReply(fullText);
+    try {
+      const posted = await interaction.fetchReply();
+      if (posted && typeof posted.id === "string") {
+        // best-effort
+        suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  // Create a compact summary and attach original content as a .md file
+  const summary = extractSummaryFromMarkdown(content, DISCORD_CONTENT_LIMIT - headerLine.length - 120);
+  const summaryText = `${headerLine}\n\n${summary}\n\n*(Full content attached as ${filename})*`;
+
+  const file = { attachment: Buffer.from(content, "utf8"), name: filename };
+  await interaction.editReply({ content: summaryText, files: [file] } as any);
+
+  try {
+    const posted = await interaction.fetchReply();
+    if (posted && typeof posted.id === "string") {
+      suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // ============================================================================
 // Bot Initialization
 // ============================================================================
@@ -771,11 +853,36 @@ const bot = new DiscordBot({
           if (delimiterRegex.test(remainder)) {
             const cells = remainder.split(delimiterRegex).map((c) => c.trim()).filter(Boolean);
             if (cells.length > 0) {
-              let title = cells[0];
-              title = title.replace(/\s*\d+(?:\.\d+)?%?$/g, "").trim();
-              title = title.replace(/[│┃║┆┊╎╏\u2500-\u257F]/g, "").replace(/\|/g, " ").trim();
-              if (!title) title = url;
-              return { title, url };
+              // Prefer the first cell that looks like a textual title (not an index/score)
+              let title: string | null = null;
+              for (const c of cells) {
+                const cell = String(c).trim();
+                if (!cell) continue;
+                // Skip purely numeric or percentage cells (indexes, scores)
+                if (/^\d+(?:\.\d+)?%?$/.test(cell)) continue;
+                // Prefer cells that contain letters (Unicode aware)
+                try {
+                  if (/\p{L}/u.test(cell)) {
+                    title = cell;
+                    break;
+                  }
+                } catch {
+                  // Fallback for environments not supporting \p{L}
+                  if (/[A-Za-z]/.test(cell)) {
+                    title = cell;
+                    break;
+                  }
+                }
+                if (!title) title = cell;
+              }
+
+              let titleStr = title || url;
+              // Remove trailing numeric scores or percentages from the title
+              titleStr = titleStr.replace(/\s*\d+(?:\.\d+)?%?$/g, "").trim();
+              // Remove any leftover box-drawing characters
+              titleStr = titleStr.replace(/[│┃║┆┊╎╏\u2500-\u257F]/g, "").replace(/\|/g, " ").trim();
+              if (!titleStr) titleStr = url;
+              return { title: titleStr, url };
             }
           }
 
@@ -826,19 +933,106 @@ const bot = new DiscordBot({
             .slice(0, clamped);
         }
 
-        const escapeTitle = (s: string) => s.replace(/\]/g, "\\]");
-        const lines = parsed.map((p) => `[${escapeTitle(p.title)}](${p.url})`);
-        const body = lines.length > 0 ? lines.join("\n") : "No results found.";
+        // Sanitize titles: remove any embedded Markdown links ([text](url)) so we don't
+        // accidentally re-introduce markdown link formatting, then escape stray closing
+        // bracket characters.
+        const escapeTitle = (s: string) => {
+          if (!s) return s;
+          // Replace markdown link occurrences with their inner text
+          let t = String(s).replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+          // Escape any remaining closing bracket to avoid accidental markdown parsing
+          t = t.replace(/\]/g, "\\]");
+          return t;
+        };
 
-        await interaction.editReply(`🔎 Search results for: \`${query}\`\n\n${body}`);
+        if (parsed.length === 0) {
+          await interaction.editReply("No results found.");
+          return;
+        }
+
+        // Start a thread off the original bot reply and post each result as a message
+        // in the thread. Update the thread title to reflect progress and final state.
+        try {
+          await interaction.editReply(`🔎 Searching for '${query}'...`);
+        } catch {
+          // ignore
+        }
+
+        let parentMsg: Message | null = null;
+        try {
+          parentMsg = (await interaction.fetchReply()) as Message;
+        } catch {
+          // ignore
+        }
+
+        let thread: ThreadChannel | null = null;
+        if (parentMsg && typeof (parentMsg as any).startThread === "function") {
+          try {
+            thread = await (parentMsg as any).startThread({ name: `Searching: '${query}'`, autoArchiveDuration: 60 });
+          } catch (err) {
+            logger.warn("Failed to start thread from reply", { error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+
+        if (!thread) {
+          try {
+            const chAny = interaction.channel as any;
+            if (chAny && chAny.threads && typeof chAny.threads.create === "function") {
+              thread = await chAny.threads.create({ name: `Searching: '${query}'`, autoArchiveDuration: 60 });
+            }
+          } catch (err) {
+            logger.warn("Failed to create thread on channel; will post results in-channel instead", { error: err instanceof Error ? err.message : String(err) });
+            thread = null;
+          }
+        }
+
+        let postedCount = 0;
+        for (const p of parsed) {
+          let summaryResult: { success: true; summary: string } | { success: false; error: string };
+          try {
+            summaryResult = await generateSummaryWithRetry(p.url, {
+              channelId: interaction.channelId ?? "",
+              messageId: String(interaction.id),
+              authorId: interaction.user?.id ?? "",
+            });
+          } catch (err) {
+            summaryResult = { success: false, error: String(err) };
+          }
+
+          const summaryText = summaryResult.success ? summaryResult.summary : `*Summary generation failed: ${summaryResult.error}*`;
+          const safeSummary = summaryText.length > 3900 ? summaryText.slice(0, 3900) + "..." : summaryText;
+
+          const title = escapeTitle(p.title);
+          const body = `**${title}**\n\n${safeSummary}\n\n<${p.url}>`;
+
+          try {
+            if (thread) {
+              await thread.send(body);
+            } else {
+              await interaction.followUp({ content: body } as any);
+            }
+          } catch (err) {
+            logger.warn("Failed to post search result", { error: err instanceof Error ? err.message : String(err) });
+          }
+
+          postedCount++;
+          try {
+            if (thread) await thread.setName(`Searching: '${query}' (${postedCount}/${parsed.length})`);
+          } catch {
+            // ignore
+          }
+        }
 
         try {
-          const posted = (await interaction.fetchReply()) as any;
-          if (posted && typeof posted.id === "string") {
-            suppressEmbedsIfPermitted(posted as Message).catch(() => {});
-          }
+          if (thread) await thread.setName(`Search results for '${query}':`);
         } catch {
-          // ignore suppression errors
+          // ignore
+        }
+
+        try {
+          await interaction.editReply(`✅ Search results for '${query}':`);
+        } catch {
+          // ignore
         }
       } catch (error) {
         if (error instanceof CliRunnerError) {
@@ -895,7 +1089,12 @@ const bot = new DiscordBot({
           // keep raw text
         }
 
-        await interaction.editReply(`📝 Briefing for: \`${query}\`\n\n${briefingText}`);
+        await editReplyWithPossibleAttachment(
+          interaction,
+          `📝 Briefing for: \`${query}\``,
+          briefingText,
+          `briefing-${query.replace(/[^a-z0-9\-]/gi, "_")}.md`
+        );
 
         try {
           const posted = (await interaction.fetchReply()) as any;

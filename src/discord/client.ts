@@ -72,6 +72,41 @@ export class DiscordBot {
         description: "Get database and embedding statistics",
       });
 
+      // Register the search command
+      // Option types use Discord API numeric values (3 = STRING, 4 = INTEGER)
+      await guild.commands.create({
+        name: "search",
+        description: "Search OpenBrain for relevant items",
+        options: [
+          {
+            name: "query",
+            description: "Search query text",
+            type: 3, // STRING
+            required: true,
+          },
+          {
+            name: "limit",
+            description: "Maximum number of results to return (1-20)",
+            type: 4, // INTEGER
+            required: false,
+          },
+        ],
+      });
+
+      // Register the briefing command
+      await guild.commands.create({
+        name: "briefing",
+        description: "Generate a briefing using the OpenBrain CLI",
+        options: [
+          {
+            name: "query",
+            description: "Query or URL to generate a briefing for",
+            type: 3, // STRING
+            required: true,
+          },
+        ],
+      });
+
       this.options.logger.info("Slash commands registered successfully");
     } catch (error) {
       this.options.logger.error("Failed to register slash commands", {

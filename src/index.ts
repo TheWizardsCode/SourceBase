@@ -953,7 +953,14 @@ const bot = new DiscordBot({
         // Start a thread off the original bot reply and post each result as a message
         // in the thread. Update the thread title to reflect progress and final state.
         try {
-          await interaction.editReply(`🔎 Searching for '${query}'...`);
+          // Post formatted results into the original reply so tests and users
+          // who do not support threads still see the results. Keep the
+          // existing thread/posting behaviour below for environments that
+          // support threads; this editReply acts as the primary visible
+          // result container.
+          const resultLines = parsed.map((p) => `[${escapeTitle(p.title)}](${p.url})`);
+          const resultsContent = `✅ Search results for '${query}':\n\n${resultLines.join("\n\n")}`;
+          await interaction.editReply(resultsContent);
         } catch {
           // ignore
         }

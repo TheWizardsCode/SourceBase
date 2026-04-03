@@ -1,4 +1,4 @@
-import { Client, Intents, TextChannel, ThreadChannel, type Message } from "discord.js";
+import { Client, Intents, TextChannel, ThreadChannel, MessageEmbed, type Message } from "discord.js";
 import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
@@ -7,6 +7,7 @@ import {
   runAddCommand,
   runQueueCommand,
   runSummaryCommand,
+  runCliCommand,
   isCliAvailable,
   CliRunnerError,
   type AddProgressEvent,
@@ -700,6 +701,88 @@ async function suppressEmbedsIfPermitted(message: Message): Promise<boolean> {
   }
 }
 
+// ==========================================================================
+// Reply helper: summarize and attach large content
+// ==========================================================================
+
+const DISCORD_CONTENT_LIMIT = 1900;
+
+function extractSummaryFromMarkdown(content: string, maxLen = 1500): string {
+  // Try to extract a '## Summary' section (case-insensitive)
+  try {
+    const summaryRegex = /(^|\n)#{1,6}\s*summary\s*\n([\s\S]*?)(?=\n#{1,6}\s*\S|\n---|$)/i;
+    const m = content.match(summaryRegex);
+    if (m && m[2]) {
+      let s = m[2].trim();
+      if (s.length > maxLen) s = s.slice(0, maxLen).trim();
+      // Attempt to end at a sentence boundary
+      const lastPeriod = s.lastIndexOf('. ');
+      if (lastPeriod > Math.floor(maxLen / 2)) s = s.slice(0, lastPeriod + 1);
+      return s;
+    }
+  } catch {
+    // ignore regex engine issues
+  }
+
+  // Fallback: use the first paragraph
+  const paragraphs = content.split(/\n\s*\n/);
+  let first = (paragraphs[0] || '').trim();
+  if (!first && paragraphs.length > 1) first = (paragraphs[1] || '').trim();
+  if (first) {
+    if (first.length <= maxLen) return first;
+    // Truncate to a sentence boundary if possible
+    const truncated = first.slice(0, maxLen);
+    const lastPeriod = truncated.lastIndexOf('. ');
+    if (lastPeriod > 0) return truncated.slice(0, lastPeriod + 1);
+    return truncated;
+  }
+
+  // Final fallback: truncate to maxLen and end at last sentence
+  let truncated = content.slice(0, maxLen);
+  const lastPeriod = truncated.lastIndexOf('. ');
+  if (lastPeriod > 0) truncated = truncated.slice(0, lastPeriod + 1);
+  return truncated;
+}
+
+async function editReplyWithPossibleAttachment(
+  interaction: any,
+  headerLine: string,
+  content: string,
+  filename = "content.md"
+): Promise<void> {
+  const fullText = `${headerLine}\n\n${content}`;
+
+  if (fullText.length <= DISCORD_CONTENT_LIMIT) {
+    await interaction.editReply(fullText);
+    try {
+      const posted = await interaction.fetchReply();
+      if (posted && typeof posted.id === "string") {
+        // best-effort
+        suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  // Create a compact summary and attach original content as a .md file
+  const summary = extractSummaryFromMarkdown(content, DISCORD_CONTENT_LIMIT - headerLine.length - 120);
+  const summaryText = `${headerLine}\n\n${summary}\n\n*(Full content attached as ${filename})*`;
+
+  const file = { attachment: Buffer.from(content, "utf8"), name: filename };
+  await interaction.editReply({ content: summaryText, files: [file] } as any);
+
+  try {
+    const posted = await interaction.fetchReply();
+    if (posted && typeof posted.id === "string") {
+      suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // ============================================================================
 // Bot Initialization
 // ============================================================================
@@ -710,11 +793,326 @@ const bot = new DiscordBot({
   logger,
   onInteraction: async (interaction) => {
     if (!interaction.isCommand()) return;
-    
-    const { commandName } = interaction;
-    
+
+    const commandName = interaction.commandName;
+
+    // Handle simple stats command
     if (commandName === "stats") {
       await interaction.reply("Stats functionality temporarily unavailable - CLI has been extracted to openBrain repository.");
+      return;
+    }
+
+    // Handle /search
+    if (commandName === "search") {
+      try {
+        const query = interaction.options.getString("query", true);
+        const limit = interaction.options.getInteger("limit") || 5;
+
+        await interaction.deferReply();
+
+        const clamped = Math.max(1, Math.min(20, limit));
+        const args = ["--json", "--limit", String(clamped), query];
+
+        const result = await runCliCommand("search", args, {
+          channelId: interaction.channelId ?? undefined,
+          messageId: undefined,
+          authorId: interaction.user?.id,
+        });
+
+        if (result.exitCode !== 0) {
+          await interaction.editReply("❌ Search failed: CLI returned an error");
+          return;
+        }
+
+        if (result.stdout.length === 0) {
+          await interaction.editReply("No results found.");
+          return;
+        }
+
+        function parseSearchLine(line: string): { title: string; url: string } | null {
+          const trimmed = line.trim();
+          if (!trimmed) return null;
+
+          try {
+            const obj = JSON.parse(trimmed);
+            if (obj && typeof obj === "object") {
+              const url = (obj.url || obj.link || obj.href) as string | undefined;
+              const title = (obj.title || obj.name || obj.text) as string | undefined;
+              if (url) return { title: title || url, url };
+            }
+          } catch {
+            // ignore
+          }
+
+          const urlMatch = trimmed.match(/https?:\/\/[^\s<>"{}|\\^`[\]]+/i);
+          const url = urlMatch ? urlMatch[0] : null;
+          if (!url) return null;
+
+          let remainder = trimmed.replace(url, "").trim();
+          const delimiterRegex = /[|│┃║┆┊╎╏\u2500-\u257F]+/;
+          if (delimiterRegex.test(remainder)) {
+            const cells = remainder.split(delimiterRegex).map((c) => c.trim()).filter(Boolean);
+            if (cells.length > 0) {
+              // Prefer the first cell that looks like a textual title (not an index/score)
+              let title: string | null = null;
+              for (const c of cells) {
+                const cell = String(c).trim();
+                if (!cell) continue;
+                // Skip purely numeric or percentage cells (indexes, scores)
+                if (/^\d+(?:\.\d+)?%?$/.test(cell)) continue;
+                // Prefer cells that contain letters (Unicode aware)
+                try {
+                  if (/\p{L}/u.test(cell)) {
+                    title = cell;
+                    break;
+                  }
+                } catch {
+                  // Fallback for environments not supporting \p{L}
+                  if (/[A-Za-z]/.test(cell)) {
+                    title = cell;
+                    break;
+                  }
+                }
+                if (!title) title = cell;
+              }
+
+              let titleStr = title || url;
+              // Remove trailing numeric scores or percentages from the title
+              titleStr = titleStr.replace(/\s*\d+(?:\.\d+)?%?$/g, "").trim();
+              // Remove any leftover box-drawing characters
+              titleStr = titleStr.replace(/[│┃║┆┊╎╏\u2500-\u257F]/g, "").replace(/\|/g, " ").trim();
+              if (!titleStr) titleStr = url;
+              return { title: titleStr, url };
+            }
+          }
+
+          remainder = remainder.replace(/\(.*?relevance.*?\)/i, "").replace(/\(\s*[0-9.]+\s*\)/, "").trim();
+          remainder = remainder.replace(/(?:\|)?\s*(?:relevance[:\s]*\d+(?:\.\d+)?|\d+(?:\.\d+)?)\s*$/i, "").trim();
+          remainder = remainder.replace(/^[\-–—\|:]+\s*/, "").replace(/\s+[\-–—\|:]+$/, "").trim();
+
+          let title = remainder.replace(/\|/g, " ").trim();
+          if (!title) title = url;
+          return { title, url };
+        }
+
+        let parsed: { title: string; url: string }[] = [];
+        const stdoutText = result.stdout.join("\n").trim();
+
+        try {
+          const jsonOut = JSON.parse(stdoutText);
+          let items: any[] = [];
+
+          if (Array.isArray(jsonOut)) {
+            items = jsonOut;
+          } else if (jsonOut && typeof jsonOut === "object") {
+            if (Array.isArray(jsonOut.results)) items = jsonOut.results;
+            else if (Array.isArray(jsonOut.hits)) items = jsonOut.hits;
+            else if (Array.isArray(jsonOut.items)) items = jsonOut.items;
+            else if (Array.isArray(jsonOut.rows)) items = jsonOut.rows;
+            else {
+              const arrProp = Object.keys(jsonOut).find((k) => Array.isArray((jsonOut as any)[k]));
+              if (arrProp) items = (jsonOut as any)[arrProp];
+            }
+          }
+
+          parsed = items
+            .map((obj) => {
+              if (!obj || typeof obj !== "object") return null;
+              const url = obj.url || obj.link || obj.href;
+              let title = obj.title || obj.name || obj.text;
+              if (!url) return null;
+              if (!title || typeof title !== "string") title = url;
+              return { title: String(title).trim(), url: String(url).trim() };
+            })
+            .filter((v): v is { title: string; url: string } => !!v)
+            .slice(0, clamped);
+        } catch (e) {
+          parsed = result.stdout
+            .map((l) => parseSearchLine(l))
+            .filter((v): v is { title: string; url: string } => !!v)
+            .slice(0, clamped);
+        }
+
+        // Sanitize titles: remove any embedded Markdown links ([text](url)) so we don't
+        // accidentally re-introduce markdown link formatting, then escape stray closing
+        // bracket characters.
+        const escapeTitle = (s: string) => {
+          if (!s) return s;
+          // Replace markdown link occurrences with their inner text
+          let t = String(s).replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+          // Escape any remaining closing bracket to avoid accidental markdown parsing
+          t = t.replace(/\]/g, "\\]");
+          return t;
+        };
+
+        if (parsed.length === 0) {
+          await interaction.editReply("No results found.");
+          return;
+        }
+
+        // Start a thread off the original bot reply and post each result as a message
+        // in the thread. Update the thread title to reflect progress and final state.
+        try {
+          await interaction.editReply(`🔎 Searching for '${query}'...`);
+        } catch {
+          // ignore
+        }
+
+        let parentMsg: Message | null = null;
+        try {
+          parentMsg = (await interaction.fetchReply()) as Message;
+        } catch {
+          // ignore
+        }
+
+        let thread: ThreadChannel | null = null;
+        if (parentMsg && typeof (parentMsg as any).startThread === "function") {
+          try {
+            thread = await (parentMsg as any).startThread({ name: `Searching: '${query}'`, autoArchiveDuration: 60 });
+          } catch (err) {
+            logger.warn("Failed to start thread from reply", { error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+
+        if (!thread) {
+          try {
+            const chAny = interaction.channel as any;
+            if (chAny && chAny.threads && typeof chAny.threads.create === "function") {
+              thread = await chAny.threads.create({ name: `Searching: '${query}'`, autoArchiveDuration: 60 });
+            }
+          } catch (err) {
+            logger.warn("Failed to create thread on channel; will post results in-channel instead", { error: err instanceof Error ? err.message : String(err) });
+            thread = null;
+          }
+        }
+
+        let postedCount = 0;
+        for (const p of parsed) {
+          let summaryResult: { success: true; summary: string } | { success: false; error: string };
+          try {
+            summaryResult = await generateSummaryWithRetry(p.url, {
+              channelId: interaction.channelId ?? "",
+              messageId: String(interaction.id),
+              authorId: interaction.user?.id ?? "",
+            });
+          } catch (err) {
+            summaryResult = { success: false, error: String(err) };
+          }
+
+          const summaryText = summaryResult.success ? summaryResult.summary : `*Summary generation failed: ${summaryResult.error}*`;
+          const safeSummary = summaryText.length > 3900 ? summaryText.slice(0, 3900) + "..." : summaryText;
+
+          const title = escapeTitle(p.title);
+          const body = `**${title}**\n\n${safeSummary}\n\n<${p.url}>`;
+
+          try {
+            if (thread) {
+              await thread.send(body);
+            } else {
+              await interaction.followUp({ content: body } as any);
+            }
+          } catch (err) {
+            logger.warn("Failed to post search result", { error: err instanceof Error ? err.message : String(err) });
+          }
+
+          postedCount++;
+          try {
+            if (thread) await thread.setName(`Searching: '${query}' (${postedCount}/${parsed.length})`);
+          } catch {
+            // ignore
+          }
+        }
+
+        try {
+          if (thread) await thread.setName(`Search results for '${query}':`);
+        } catch {
+          // ignore
+        }
+
+        try {
+          await interaction.editReply(`✅ Search results for '${query}':`);
+        } catch {
+          // ignore
+        }
+      } catch (error) {
+        if (error instanceof CliRunnerError) {
+          await interaction.reply({ content: "⚠️ Search failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
+        } else {
+          await interaction.reply({ content: "⚠️ An unexpected error occurred while performing the search.", ephemeral: true });
+        }
+      }
+
+      return;
+    }
+
+    // Handle /briefing
+    if (commandName === "briefing") {
+      try {
+        const query = interaction.options.getString("query", true);
+
+        await interaction.deferReply();
+
+        if (!(await isCliAvailable())) {
+          await interaction.editReply("⚠️ Briefing failed because the OpenBrain CLI is unavailable.");
+          return;
+        }
+
+        const args = ["run", "--json", "--query", query];
+        const result = await runCliCommand("briefing", args, {
+          channelId: interaction.channelId ?? undefined,
+          messageId: undefined,
+          authorId: interaction.user?.id,
+        });
+
+        if (result.exitCode !== 0) {
+          await interaction.editReply("❌ Briefing failed: CLI returned an error");
+          return;
+        }
+
+        if (result.stdout.length === 0) {
+          await interaction.editReply("No briefing output received.");
+          return;
+        }
+
+        const stdoutText = result.stdout.join("\n").trim();
+        let briefingText = stdoutText;
+
+        try {
+          const jsonOut = JSON.parse(stdoutText);
+          if (typeof jsonOut === "string") briefingText = jsonOut;
+          else if (Array.isArray(jsonOut)) {
+            briefingText = jsonOut.filter((x) => typeof x === "string").join("\n\n") || stdoutText;
+          } else if (jsonOut && typeof jsonOut === "object") {
+            briefingText = jsonOut.briefing || jsonOut.summary || jsonOut.text || jsonOut.body || JSON.stringify(jsonOut, null, 2);
+          }
+        } catch {
+          // keep raw text
+        }
+
+        await editReplyWithPossibleAttachment(
+          interaction,
+          `📝 Briefing for: \`${query}\``,
+          briefingText,
+          `briefing-${query.replace(/[^a-z0-9\-]/gi, "_")}.md`
+        );
+
+        try {
+          const posted = (await interaction.fetchReply()) as any;
+          if (posted && typeof posted.id === "string") {
+            suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+          }
+        } catch {
+          // ignore
+        }
+      } catch (error) {
+        if (error instanceof CliRunnerError) {
+          await interaction.reply({ content: "⚠️ Briefing failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
+        } else {
+          await interaction.reply({ content: "⚠️ An unexpected error occurred while generating the briefing.", ephemeral: true });
+        }
+      }
+
+      return;
     }
   },
   onMonitoredMessage: async (message) => {

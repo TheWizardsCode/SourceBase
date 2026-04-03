@@ -15,5 +15,26 @@ export default defineConfig({
       LLM_BASE_URL: "http://localhost:8080",
       LLM_MODEL: "test-model",
     },
+    // Coverage configuration: collect coverage only for the bot/ module
+    coverage: {
+      // Use the istanbul provider for robust reports and lcov output
+      provider: "istanbul",
+      reporter: ["text", "lcov"],
+      reportsDirectory: "coverage",
+      // Include only the bot module sources for coverage measurements
+      include: ["src/bot/**/*.{ts,js}"],
+      // Exclude test files and node_modules
+      exclude: ["**/*.test.*", "tests/**", "node_modules/**"],
+      all: true,
+      // Enforce minimum coverage thresholds for the bot/ module
+      thresholds: {
+        global: {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
+      },
+    },
   },
 });

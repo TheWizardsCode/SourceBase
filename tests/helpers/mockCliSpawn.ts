@@ -143,6 +143,42 @@ export function createSpawnMockWithStderr(stderrLines: string[], exitCode = 1) {
   return { mockSpawn, spawnCalls };
 }
 
+export function createSpawnMockLongRunning(onKillExitCode = 0) {
+  const spawnCalls: SpawnCall[] = [];
+
+  const mockSpawn = (exe: string, args: string[], opts: any) => {
+    // create a child that does not exit until kill() is called
+    const child = new EventEmitter() as unknown as ChildProcess;
+
+    const stdout = new Readable({ read() {} });
+    const stderr = new Readable({ read() {} });
+
+    (child as any).stdout = stdout;
+    (child as any).stderr = stderr;
+    (child as any).exitCode = null;
+    (child as any).signalCode = null;
+    // track killed state for assertions
+    (child as any).__killed = false;
+
+    (child as any).kill = (signal?: string) => {
+      (child as any).__killed = true;
+      // simulate asynchronous exit after kill
+      setTimeout(() => {
+        const code = onKillExitCode;
+        (child as any).exitCode = code;
+        child.emit("exit", code);
+      }, 0);
+      return true;
+    };
+
+    // do not emit exit or close streams automatically; long running
+    spawnCalls.push({ exe, args, opts, child } as any);
+    return child;
+  };
+
+  return { mockSpawn, spawnCalls };
+}
+
 export async function doMockChildProcess(vi: any, mockSpawn: (exe: string, args: string[], opts: any) => ChildProcess) {
   await vi.doMock("child_process", async () => {
     // vi.importActual is untyped at runtime; avoid using a generic type argument

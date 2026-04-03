@@ -13,6 +13,8 @@ describe("runAddCommand spawn error handling", () => {
     // Ensure any stray child processes are terminated
     const mod = await import("../../src/bot/cli-runner.js");
     await mod.terminateAllChildProcesses();
+    // After termination, assert no active child processes remain.
+    expect(mod.getActiveChildProcessCount()).toBe(0);
   });
 
   it("should throw CliRunnerError when spawn emits error with ENOENT", async () => {

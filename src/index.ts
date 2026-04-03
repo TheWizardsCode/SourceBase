@@ -7,6 +7,7 @@ import {
   runAddCommand,
   runQueueCommand,
   runSummaryCommand,
+  runCliCommand,
   isCliAvailable,
   CliRunnerError,
   type AddProgressEvent,
@@ -710,11 +711,209 @@ const bot = new DiscordBot({
   logger,
   onInteraction: async (interaction) => {
     if (!interaction.isCommand()) return;
-    
-    const { commandName } = interaction;
-    
+
+    const commandName = interaction.commandName;
+
+    // Handle simple stats command
     if (commandName === "stats") {
       await interaction.reply("Stats functionality temporarily unavailable - CLI has been extracted to openBrain repository.");
+      return;
+    }
+
+    // Handle /search
+    if (commandName === "search") {
+      try {
+        const query = interaction.options.getString("query", true);
+        const limit = interaction.options.getInteger("limit") || 5;
+
+        await interaction.deferReply();
+
+        const clamped = Math.max(1, Math.min(20, limit));
+        const args = ["--json", "--limit", String(clamped), query];
+
+        const result = await runCliCommand("search", args, {
+          channelId: interaction.channelId ?? undefined,
+          messageId: undefined,
+          authorId: interaction.user?.id,
+        });
+
+        if (result.exitCode !== 0) {
+          await interaction.editReply("❌ Search failed: CLI returned an error");
+          return;
+        }
+
+        if (result.stdout.length === 0) {
+          await interaction.editReply("No results found.");
+          return;
+        }
+
+        function parseSearchLine(line: string): { title: string; url: string } | null {
+          const trimmed = line.trim();
+          if (!trimmed) return null;
+
+          try {
+            const obj = JSON.parse(trimmed);
+            if (obj && typeof obj === "object") {
+              const url = (obj.url || obj.link || obj.href) as string | undefined;
+              const title = (obj.title || obj.name || obj.text) as string | undefined;
+              if (url) return { title: title || url, url };
+            }
+          } catch {
+            // ignore
+          }
+
+          const urlMatch = trimmed.match(/https?:\/\/[^\s<>"{}|\\^`[\]]+/i);
+          const url = urlMatch ? urlMatch[0] : null;
+          if (!url) return null;
+
+          let remainder = trimmed.replace(url, "").trim();
+          const delimiterRegex = /[|│┃║┆┊╎╏\u2500-\u257F]+/;
+          if (delimiterRegex.test(remainder)) {
+            const cells = remainder.split(delimiterRegex).map((c) => c.trim()).filter(Boolean);
+            if (cells.length > 0) {
+              let title = cells[0];
+              title = title.replace(/\s*\d+(?:\.\d+)?%?$/g, "").trim();
+              title = title.replace(/[│┃║┆┊╎╏\u2500-\u257F]/g, "").replace(/\|/g, " ").trim();
+              if (!title) title = url;
+              return { title, url };
+            }
+          }
+
+          remainder = remainder.replace(/\(.*?relevance.*?\)/i, "").replace(/\(\s*[0-9.]+\s*\)/, "").trim();
+          remainder = remainder.replace(/(?:\|)?\s*(?:relevance[:\s]*\d+(?:\.\d+)?|\d+(?:\.\d+)?)\s*$/i, "").trim();
+          remainder = remainder.replace(/^[\-–—\|:]+\s*/, "").replace(/\s+[\-–—\|:]+$/, "").trim();
+
+          let title = remainder.replace(/\|/g, " ").trim();
+          if (!title) title = url;
+          return { title, url };
+        }
+
+        let parsed: { title: string; url: string }[] = [];
+        const stdoutText = result.stdout.join("\n").trim();
+
+        try {
+          const jsonOut = JSON.parse(stdoutText);
+          let items: any[] = [];
+
+          if (Array.isArray(jsonOut)) {
+            items = jsonOut;
+          } else if (jsonOut && typeof jsonOut === "object") {
+            if (Array.isArray(jsonOut.results)) items = jsonOut.results;
+            else if (Array.isArray(jsonOut.hits)) items = jsonOut.hits;
+            else if (Array.isArray(jsonOut.items)) items = jsonOut.items;
+            else if (Array.isArray(jsonOut.rows)) items = jsonOut.rows;
+            else {
+              const arrProp = Object.keys(jsonOut).find((k) => Array.isArray((jsonOut as any)[k]));
+              if (arrProp) items = (jsonOut as any)[arrProp];
+            }
+          }
+
+          parsed = items
+            .map((obj) => {
+              if (!obj || typeof obj !== "object") return null;
+              const url = obj.url || obj.link || obj.href;
+              let title = obj.title || obj.name || obj.text;
+              if (!url) return null;
+              if (!title || typeof title !== "string") title = url;
+              return { title: String(title).trim(), url: String(url).trim() };
+            })
+            .filter((v): v is { title: string; url: string } => !!v)
+            .slice(0, clamped);
+        } catch (e) {
+          parsed = result.stdout
+            .map((l) => parseSearchLine(l))
+            .filter((v): v is { title: string; url: string } => !!v)
+            .slice(0, clamped);
+        }
+
+        const escapeTitle = (s: string) => s.replace(/\]/g, "\\]");
+        const lines = parsed.map((p) => `[${escapeTitle(p.title)}](${p.url})`);
+        const body = lines.length > 0 ? lines.join("\n") : "No results found.";
+
+        await interaction.editReply(`🔎 Search results for: \`${query}\`\n\n${body}`);
+
+        try {
+          const posted = (await interaction.fetchReply()) as any;
+          if (posted && typeof posted.id === "string") {
+            suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+          }
+        } catch {
+          // ignore suppression errors
+        }
+      } catch (error) {
+        if (error instanceof CliRunnerError) {
+          await interaction.reply({ content: "⚠️ Search failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
+        } else {
+          await interaction.reply({ content: "⚠️ An unexpected error occurred while performing the search.", ephemeral: true });
+        }
+      }
+
+      return;
+    }
+
+    // Handle /briefing
+    if (commandName === "briefing") {
+      try {
+        const query = interaction.options.getString("query", true);
+
+        await interaction.deferReply();
+
+        if (!(await isCliAvailable())) {
+          await interaction.editReply("⚠️ Briefing failed because the OpenBrain CLI is unavailable.");
+          return;
+        }
+
+        const args = ["run", "--json", "--query", query];
+        const result = await runCliCommand("briefing", args, {
+          channelId: interaction.channelId ?? undefined,
+          messageId: undefined,
+          authorId: interaction.user?.id,
+        });
+
+        if (result.exitCode !== 0) {
+          await interaction.editReply("❌ Briefing failed: CLI returned an error");
+          return;
+        }
+
+        if (result.stdout.length === 0) {
+          await interaction.editReply("No briefing output received.");
+          return;
+        }
+
+        const stdoutText = result.stdout.join("\n").trim();
+        let briefingText = stdoutText;
+
+        try {
+          const jsonOut = JSON.parse(stdoutText);
+          if (typeof jsonOut === "string") briefingText = jsonOut;
+          else if (Array.isArray(jsonOut)) {
+            briefingText = jsonOut.filter((x) => typeof x === "string").join("\n\n") || stdoutText;
+          } else if (jsonOut && typeof jsonOut === "object") {
+            briefingText = jsonOut.briefing || jsonOut.summary || jsonOut.text || jsonOut.body || JSON.stringify(jsonOut, null, 2);
+          }
+        } catch {
+          // keep raw text
+        }
+
+        await interaction.editReply(`📝 Briefing for: \`${query}\`\n\n${briefingText}`);
+
+        try {
+          const posted = (await interaction.fetchReply()) as any;
+          if (posted && typeof posted.id === "string") {
+            suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+          }
+        } catch {
+          // ignore
+        }
+      } catch (error) {
+        if (error instanceof CliRunnerError) {
+          await interaction.reply({ content: "⚠️ Briefing failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
+        } else {
+          await interaction.reply({ content: "⚠️ An unexpected error occurred while generating the briefing.", ephemeral: true });
+        }
+      }
+
+      return;
     }
   },
   onMonitoredMessage: async (message) => {

@@ -104,6 +104,14 @@ export class DiscordBot {
             type: 3, // STRING
             required: true,
           },
+          {
+            name: "k",
+            description: "Number of items to include in briefing (1-50)",
+            type: 4, // INTEGER
+            required: false,
+            minValue: 1,
+            maxValue: 50,
+          },
         ],
       });
 

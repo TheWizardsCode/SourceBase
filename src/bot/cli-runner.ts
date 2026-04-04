@@ -341,6 +341,13 @@ function runCliSubprocess(
   // Add remaining args
   cmdArgs.push(...args);
 
+  // Debug: Log the exact command being spawned for troubleshooting
+  try {
+    console.log(`[CLI Debug] Spawning command: ${cliExecutable} ${cmdArgs.map((a) => String(a)).join(" ")}`);
+  } catch {
+    // ignore any logging issues
+  }
+
   // Spawn the subprocess
   const subprocess = spawn(cliExecutable, cmdArgs, {
     cwd,

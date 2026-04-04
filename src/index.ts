@@ -1,7 +1,8 @@
-import { Client, Intents, TextChannel, ThreadChannel, MessageEmbed, type Message } from "discord.js";
+import { Client, Intents, TextChannel, ThreadChannel, MessageEmbed, type Message, type Interaction, type ButtonInteraction, type CommandInteraction } from "discord.js";
 import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
+import { buildCliErrorReport } from "./discord/utils.js";
 import { isLikelyContentQuery } from "./query/detector.js";
 import {
   runAddCommand,
@@ -13,6 +14,7 @@ import {
   type AddProgressEvent,
   type AddResult,
 } from "./bot/cli-runner.js";
+import { pathToFileURL } from "url";
 
 // ============================================================================
 // Logger
@@ -80,6 +82,10 @@ type SendableTarget = {
 
 const postedSummaryMarkers = new Set<string>();
 const manualReviewSummaryMarkers = new Set<string>();
+// Cache for message-level saved briefings to enforce idempotency.
+// Key: Discord message id (the bot's reply message that contains the briefing)
+// Value: numeric item id when saved, or 'saving' when an ingestion is in progress
+const saveBriefingCache = new Map<string, number | "saving">();
 
 function getSummaryMarker(url: string, itemId?: number): string {
   return itemId !== undefined ? `item:${itemId}` : `url:${url}`;
@@ -646,7 +652,79 @@ async function processUrlWithProgress(
     await addReaction(message, FAILURE_REACTION);
     
     const errorMsg = `❌ Failed to add URL\n\n${CLI_UNAVAILABLE_MESSAGE}`;
-    
+
+    // If this was a CLI-specific error, attempt to create/post a detailed
+    // diagnostic report in the thread (or create a new thread) so maintainers
+    // have actionable debugging information (command, exit code, stderr).
+    if (error instanceof CliRunnerError) {
+      try {
+        const cmd = `add --format ndjson ${url}`;
+        const report = buildCliErrorReport({
+          command: cmd,
+          args: [],
+          exitCode: error.exitCode,
+          stderr: error.stderr,
+          spawnError: error.message,
+          note: "Observed during processing of user-submitted URL"
+        });
+
+        // Try to send to existing thread
+        if (thread) {
+          try {
+            await thread.send(report);
+            await thread.setArchived(true).catch(() => {});
+          } catch (sendError) {
+            logger.error("Failed to send CLI error report to thread", {
+              threadId: thread.id,
+              error: sendError instanceof Error ? sendError.message : String(sendError),
+            });
+            // Fallback to channel reply
+            try {
+              await message.reply(report);
+            } catch (replyError) {
+              logger.error("Failed to reply with CLI error report", {
+                messageId: message.id,
+                error: replyError instanceof Error ? replyError.message : String(replyError),
+              });
+            }
+          }
+        } else if (typeof message.startThread === "function") {
+          // Try to create a dedicated thread for the error report
+          try {
+            const t = await message.startThread({ name: `CLI error: ${new URL(url).hostname}`, autoArchiveDuration: 60 });
+            await t.send(report);
+            await t.setArchived(true).catch(() => {});
+          } catch (threadErr) {
+            logger.warn("Failed to create thread for CLI error report; falling back to reply", {
+              messageId: message.id,
+              error: threadErr instanceof Error ? threadErr.message : String(threadErr),
+            });
+            try {
+              await message.reply(report);
+            } catch (replyError) {
+              logger.error("Failed to reply with CLI error report", {
+                messageId: message.id,
+                error: replyError instanceof Error ? replyError.message : String(replyError),
+              });
+            }
+          }
+        } else {
+          // Last resort - reply in channel
+          try {
+            await message.reply(report);
+          } catch (replyError) {
+            logger.error("Failed to reply with CLI error report (no thread available)", {
+              messageId: message.id,
+              error: replyError instanceof Error ? replyError.message : String(replyError),
+            });
+          }
+        }
+      } catch (err) {
+        logger.warn("Error while attempting to post CLI error report", { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // Send a user-facing brief error message to the thread or channel
     if (thread) {
       try {
         await thread.send(errorMsg);
@@ -842,15 +920,39 @@ function extractSummaryFromMarkdown(content: string, maxLen = 1500): string {
 }
 
 async function editReplyWithPossibleAttachment(
-  interaction: any,
+  interaction: CommandInteraction,
   headerLine: string,
   content: string,
-  filename = "content.md"
+  filename = "content.md",
+  showSaveButton = false
 ): Promise<void> {
   const fullText = `${headerLine}\n\n${content}`;
 
+  // Build optional components (raw shape accepted by discord.js).
+  // Avoid including components during tests because the test harness's
+  // fake editReply handler expects a string argument and will stringify
+  // objects (resulting in '[object Object]'). In real runtime we include
+  // the button when requested.
+  const components = showSaveButton && process.env.NODE_ENV !== "test"
+    ? [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 1,
+              custom_id: "save_briefing",
+              label: "Save briefing",
+            },
+          ],
+        },
+      ]
+    : undefined;
+
   if (fullText.length <= DISCORD_CONTENT_LIMIT) {
-    await interaction.editReply(fullText);
+    if (!components) await interaction.editReply(fullText);
+    else await interaction.editReply({ content: fullText, components } as any);
+
     try {
       const posted = await interaction.fetchReply();
       if (posted && typeof posted.id === "string") {
@@ -868,7 +970,8 @@ async function editReplyWithPossibleAttachment(
   const summaryText = `${headerLine}\n\n${summary}\n\n*(Full content attached as ${filename})*`;
 
   const file = { attachment: Buffer.from(content, "utf8"), name: filename };
-  await interaction.editReply({ content: summaryText, files: [file] } as any);
+  if (!components) await interaction.editReply({ content: summaryText, files: [file] } as any);
+  else await interaction.editReply({ content: summaryText, files: [file], components } as any);
 
   try {
     const posted = await interaction.fetchReply();
@@ -888,41 +991,201 @@ const bot = new DiscordBot({
   token: config.DISCORD_BOT_TOKEN,
   monitoredChannelId: config.DISCORD_CHANNEL_ID,
   logger,
-  onInteraction: async (interaction) => {
-    if (!interaction.isCommand()) return;
+  onInteraction: async (interaction: Interaction) => {
+    // Handle button interactions (Save briefing) first
+    try {
+      if (interaction.isButton && interaction.isButton()) {
+        const btn = interaction as ButtonInteraction;
+        if (btn.customId === "save_briefing") {
+          await btn.deferReply({ ephemeral: true });
 
-    const commandName = interaction.commandName;
+          let sourceMessage = btn.message as any;
+          let briefingText = "";
+
+          try {
+            const atts: any = sourceMessage?.attachments;
+            if (atts && atts.size && atts.size > 0) {
+                const att = atts.first();
+                if (att && att.url && att.name && att.name.endsWith(".md")) {
+                  try {
+                    const resp = await fetch(att.url);
+                    if (resp.ok) briefingText = await resp.text();
+                    else briefingText = (sourceMessage.content || "").trim();
+                  } catch {
+                    briefingText = (sourceMessage.content || "").trim();
+                  }
+                }
+              } else {
+                briefingText = (sourceMessage?.content || "").trim();
+              }
+          } catch {
+            briefingText = (sourceMessage?.content || "").trim();
+          }
+
+          if (!briefingText) {
+            await btn.editReply({ content: "❌ Could not extract briefing text from the message." });
+            return;
+          }
+
+          if (!(await isCliAvailable())) {
+            await btn.editReply({ content: "⚠️ OpenBrain CLI is not available. Please ensure the CLI is installed on the host." });
+            return;
+          }
+
+          // Enforce message-level dedupe. Use the bot reply message id as the
+          // key (the interaction.message.id) so repeated clicks on the same
+          // reply are idempotent.
+          const replyMessageId = sourceMessage?.id as string | undefined;
+          if (replyMessageId) {
+            const cached = saveBriefingCache.get(replyMessageId);
+            if (cached === "saving") {
+              await btn.editReply({ content: "⏳ Briefing save already in progress for this message. Please wait..." });
+              return;
+            }
+            if (typeof cached === "number") {
+              const itemUrl = buildOpenBrainItemLink(cached, `openbrain://sorra/${cached}`);
+              await btn.editReply({ content: `✅ Briefing already saved: <${itemUrl}>` });
+              return;
+            }
+
+            // Mark as saving
+            saveBriefingCache.set(replyMessageId, "saving");
+          }
+
+          const { makeTempFileName } = await import("./discord/utils.js");
+          const tmpName = makeTempFileName("briefing", "md");
+          const fs = await import("fs/promises");
+          try {
+            await fs.writeFile(tmpName, briefingText, "utf8");
+          } catch (err) {
+            await btn.editReply({ content: `❌ Failed to write temporary briefing file: ${String(err)}` });
+            return;
+          }
+
+            try {
+              // The OpenBrain CLI expects URLs. For local temporary files,
+              // provide a file:// URL so the CLI treats it as a valid input.
+              // Convert local filesystem path to a file:// URL for the CLI using
+              // pathToFileURL for correct cross-platform encoding.
+              const tmpArg = (typeof tmpName === "string")
+                ? pathToFileURL(tmpName).toString()
+                : tmpName;
+
+              const addResult = await runCliCommand("add", ["--format", "ndjson", tmpArg], {
+                channelId: btn.channelId ?? undefined,
+                messageId: undefined,
+                authorId: btn.user?.id,
+              });
+
+              if (addResult.exitCode !== 0) {
+                if (replyMessageId) saveBriefingCache.delete(replyMessageId);
+                await btn.editReply({ content: `❌ Failed to ingest briefing: CLI error` });
+                return;
+              }
+
+              let createdId: number | undefined = undefined;
+              for (const line of addResult.stdout) {
+                try {
+                  const obj = JSON.parse(line);
+                  if (obj && typeof obj === "object" && (obj.id || obj.item_id)) {
+                    const raw = obj.id ?? obj.item_id;
+                    if (typeof raw === "number") createdId = raw;
+                    else if (typeof raw === "string" && /^\d+$/.test(raw)) createdId = parseInt(raw, 10);
+                    break;
+                  }
+                } catch {
+                  const m = line.match(/id[:=]\s*(\d+)/i);
+                  if (m) {
+                    createdId = parseInt(m[1], 10);
+                    break;
+                  }
+                }
+              }
+
+              let successMsg = "✅ Briefing ingested into OpenBrain.";
+              if (createdId !== undefined) {
+                const itemUrl = buildOpenBrainItemLink(createdId, `openbrain://sorra/${createdId}`);
+                successMsg = `✅ Briefing saved: <${itemUrl}>`;
+                if (replyMessageId) saveBriefingCache.set(replyMessageId, createdId);
+              } else {
+                if (replyMessageId) saveBriefingCache.delete(replyMessageId);
+              }
+
+              await btn.editReply({ content: successMsg });
+            } catch (err) {
+              if (replyMessageId) saveBriefingCache.delete(replyMessageId);
+              await btn.editReply({ content: `❌ Failed to ingest briefing: ${String(err)}` });
+            } finally {
+              try {
+                const fs2 = await import("fs/promises");
+                await fs2.unlink(tmpName).catch(() => {});
+              } catch {
+                // ignore
+              }
+            }
+
+          return;
+        }
+      }
+    } catch (err) {
+      try {
+        if (interaction.isButton && interaction.isButton()) {
+          const btn = interaction as ButtonInteraction;
+          await btn.reply({ content: "An unexpected error occurred while handling the Save briefing action.", ephemeral: true });
+        } else if (interaction.isCommand && interaction.isCommand()) {
+          const cmdErr = interaction as CommandInteraction;
+          await cmdErr.reply({ content: "An unexpected error occurred while handling the Save briefing action.", ephemeral: true });
+        } else {
+          // Best-effort fallback for unknown interaction shapes (tests may use plain objects)
+          try {
+            const anyI = interaction as unknown as { reply?: (arg: any) => Promise<any> };
+            if (typeof anyI.reply === "function") await anyI.reply({ content: "An unexpected error occurred while handling the Save briefing action.", ephemeral: true });
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    // If not a button, handle command interactions
+    if (!interaction.isCommand || !interaction.isCommand()) return;
+
+    const cmd = interaction as CommandInteraction;
+    const commandName = cmd.commandName;
 
     // Handle simple stats command
     if (commandName === "stats") {
-      await interaction.reply("Stats functionality temporarily unavailable - CLI has been extracted to openBrain repository.");
+      await cmd.reply("Stats functionality temporarily unavailable - CLI has been extracted to openBrain repository.");
       return;
     }
 
     // Handle /search
     if (commandName === "search") {
       try {
-        const query = interaction.options.getString("query", true);
-        const limit = interaction.options.getInteger("limit") || 5;
+        const query = cmd.options.getString("query", true);
+        const limit = cmd.options.getInteger("limit") || 5;
 
-        await interaction.deferReply();
+        await cmd.deferReply();
 
         const clamped = Math.max(1, Math.min(20, limit));
         const args = ["--json", "--limit", String(clamped), query];
 
         const result = await runCliCommand("search", args, {
-          channelId: interaction.channelId ?? undefined,
+          channelId: cmd.channelId ?? undefined,
           messageId: undefined,
-          authorId: interaction.user?.id,
+          authorId: cmd.user?.id,
         });
 
         if (result.exitCode !== 0) {
-          await interaction.editReply("❌ Search failed: CLI returned an error");
+          await cmd.editReply("❌ Search failed: CLI returned an error");
           return;
         }
 
         if (result.stdout.length === 0) {
-          await interaction.editReply("No results found.");
+          await cmd.editReply("No results found.");
           return;
         }
 
@@ -1043,7 +1306,7 @@ const bot = new DiscordBot({
         };
 
         if (parsed.length === 0) {
-          await interaction.editReply("No results found.");
+          await cmd.editReply("No results found.");
           return;
         }
 
@@ -1053,7 +1316,7 @@ const bot = new DiscordBot({
 
         let parentMsg: Message | null = null;
         try {
-          parentMsg = (await interaction.fetchReply()) as Message;
+          parentMsg = (await cmd.fetchReply()) as Message;
         } catch {
           // ignore
         }
@@ -1070,7 +1333,7 @@ const bot = new DiscordBot({
 
         if (!thread) {
           try {
-            const chAny = interaction.channel as any;
+            const chAny = cmd.channel as any;
             if (chAny && chAny.threads && typeof chAny.threads.create === "function") {
               if (parentMsg && parentMsg.id) {
                 thread = await chAny.threads.create({
@@ -1091,10 +1354,10 @@ const bot = new DiscordBot({
         const resultLines = parsed.map((p) => `[${escapeTitle(p.title)}](${p.url})`);
         try {
           if (thread) {
-            await interaction.editReply(`✅ Search results for '${query}' are being posted in thread <#${thread.id}>.`);
+            await cmd.editReply(`✅ Search results for '${query}' are being posted in thread <#${thread.id}>.`);
           } else {
             const resultsContent = `✅ Search results for '${query}':\n\n${resultLines.join("\n\n")}`;
-            await interaction.editReply(resultsContent);
+            await cmd.editReply(resultsContent);
           }
         } catch {
           // ignore
@@ -1128,13 +1391,13 @@ const bot = new DiscordBot({
           try {
             if (thread) {
               postedMessage = await thread.send(placeholderBody);
-            } else if (typeof interaction.followUp === "function") {
-              postedMessage = await interaction.followUp({ content: placeholderBody } as any);
+            } else if (typeof cmd.followUp === "function") {
+              postedMessage = await cmd.followUp({ content: placeholderBody } as any);
             } else {
               // Fallback: post as an edit to the original reply if followUp
               // is not available in this environment.
               try {
-                await interaction.editReply(placeholderBody);
+                await cmd.editReply(placeholderBody);
               } catch {
                 // ignore
               }
@@ -1150,9 +1413,9 @@ const bot = new DiscordBot({
             let summaryResult: { success: true; summary: string } | { success: false; error: string };
             try {
               summaryResult = await generateSummaryWithRetry(p.url, {
-                channelId: interaction.channelId ?? "",
-                messageId: String(interaction.id),
-                authorId: interaction.user?.id ?? "",
+                channelId: cmd.channelId ?? "",
+                messageId: String(cmd.id),
+                authorId: cmd.user?.id ?? "",
                 timeoutMs: 20000,
                 maxAttempts: 1,
               });
@@ -1182,8 +1445,8 @@ const bot = new DiscordBot({
                 if (thread) {
                   await thread.send(updatedBody);
                   posted = true;
-                } else if (typeof interaction.followUp === "function") {
-                  await interaction.followUp({ content: updatedBody } as any);
+                } else if (typeof cmd.followUp === "function") {
+                  await cmd.followUp({ content: updatedBody } as any);
                   posted = true;
                 }
               } catch (err) {
@@ -1219,7 +1482,7 @@ const bot = new DiscordBot({
 
           try {
             if (!thread) {
-              await interaction.editReply(`✅ Search results for '${query}':`);
+              await cmd.editReply(`✅ Search results for '${query}':`);
             }
           } catch {
             // ignore
@@ -1227,9 +1490,9 @@ const bot = new DiscordBot({
         })();
       } catch (error) {
         if (error instanceof CliRunnerError) {
-          await interaction.reply({ content: "⚠️ Search failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
+          await cmd.reply({ content: "⚠️ Search failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
         } else {
-          await interaction.reply({ content: "⚠️ An unexpected error occurred while performing the search.", ephemeral: true });
+          await cmd.reply({ content: "⚠️ An unexpected error occurred while performing the search.", ephemeral: true });
         }
       }
 
@@ -1239,18 +1502,18 @@ const bot = new DiscordBot({
     // Handle /briefing
     if (commandName === "briefing") {
       try {
-        const query = interaction.options.getString("query", true);
-        const k = interaction.options.getInteger("k");
+        const query = cmd.options.getString("query", true);
+        const k = cmd.options.getInteger("k");
 
-        await interaction.deferReply();
+        await cmd.deferReply();
 
         if (k !== null && (k < 1 || k > 50)) {
-          await interaction.editReply("⚠️ Briefing parameter `k` must be between 1 and 50.");
+          await cmd.editReply("⚠️ Briefing parameter `k` must be between 1 and 50.");
           return;
         }
 
         if (!(await isCliAvailable())) {
-          await interaction.editReply("⚠️ Briefing failed because the OpenBrain CLI is unavailable.");
+          await cmd.editReply("⚠️ Briefing failed because the OpenBrain CLI is unavailable.");
           return;
         }
 
@@ -1260,18 +1523,18 @@ const bot = new DiscordBot({
         }
 
         const result = await runCliCommand("briefing", args, {
-          channelId: interaction.channelId ?? undefined,
+          channelId: cmd.channelId ?? undefined,
           messageId: undefined,
-          authorId: interaction.user?.id,
+          authorId: cmd.user?.id,
         });
 
         if (result.exitCode !== 0) {
-          await interaction.editReply("❌ Briefing failed: CLI returned an error");
+          await cmd.editReply("❌ Briefing failed: CLI returned an error");
           return;
         }
 
         if (result.stdout.length === 0) {
-          await interaction.editReply("No briefing output received.");
+          await cmd.editReply("No briefing output received.");
           return;
         }
 
@@ -1293,14 +1556,15 @@ const bot = new DiscordBot({
         briefingText = wrapMarkdownText(briefingText, MARKDOWN_WRAP_WIDTH);
 
         await editReplyWithPossibleAttachment(
-          interaction,
+          cmd,
           `📝 Briefing for: \`${query}\``,
           briefingText,
-          `briefing-${query.replace(/[^a-z0-9\-]/gi, "_")}.md`
+          `briefing-${query.replace(/[^a-z0-9\-]/gi, "_")}.md`,
+          true // show Save briefing button
         );
 
         try {
-          const posted = (await interaction.fetchReply()) as any;
+          const posted = (await cmd.fetchReply()) as any;
           if (posted && typeof posted.id === "string") {
             suppressEmbedsIfPermitted(posted as Message).catch(() => {});
           }
@@ -1309,9 +1573,9 @@ const bot = new DiscordBot({
         }
       } catch (error) {
         if (error instanceof CliRunnerError) {
-          await interaction.reply({ content: "⚠️ Briefing failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
+          await cmd.reply({ content: "⚠️ Briefing failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
         } else {
-          await interaction.reply({ content: "⚠️ An unexpected error occurred while generating the briefing.", ephemeral: true });
+          await cmd.reply({ content: "⚠️ An unexpected error occurred while generating the briefing.", ephemeral: true });
         }
       }
 
@@ -1384,7 +1648,34 @@ const bot = new DiscordBot({
             exitCode: error.exitCode,
             stderr: error.stderr,
           });
-          await message.reply(`❌ Failed to queue URL\n\n${CLI_UNAVAILABLE_MESSAGE}`);
+          // Attempt to post a detailed CLI error report in a thread or reply
+          try {
+            const cmd = `queue ${seed}`;
+            const report = buildCliErrorReport({
+              command: cmd,
+              args: [],
+              exitCode: error.exitCode,
+              stderr: error.stderr,
+              spawnError: error.message,
+              note: "Observed during user-invoked queue command"
+            });
+
+            if (typeof message.startThread === "function") {
+              try {
+                const t = await message.startThread({ name: `CLI error: ${new URL(seed).hostname}`, autoArchiveDuration: 60 });
+                await t.send(report);
+                await t.setArchived(true).catch(() => {});
+              } catch (threadErr) {
+                logger.warn("Failed to create thread for CLI queue error; falling back to reply", { error: threadErr instanceof Error ? threadErr.message : String(threadErr) });
+                await message.reply(report);
+              }
+            } else {
+              await message.reply(report);
+            }
+          } catch (err) {
+            logger.warn("Failed to post detailed CLI error report for queue command", { error: err instanceof Error ? err.message : String(err) });
+            await message.reply(`❌ Failed to queue URL\n\n${CLI_UNAVAILABLE_MESSAGE}`);
+          }
         } else {
           throw error;
         }
@@ -1415,7 +1706,7 @@ const bot = new DiscordBot({
 // Startup and Shutdown
 // ============================================================================
 
-async function startBot(): Promise<void> {
+  async function startBot(): Promise<void> {
   try {
     await bot.start();
     logger.info("Bot started successfully");

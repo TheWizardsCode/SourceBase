@@ -175,6 +175,50 @@ async function resolveSummaryTarget(
   return null;
 }
 
+/**
+ * Create a thread for a given message with fallbacks.
+ * Tries message.startThread(), then channel.threads.create() (with and without startMessage).
+ * Returns the created ThreadChannel or null if thread creation is not supported / failed.
+ */
+async function createThreadForMessage(message: Message, name: string, autoArchiveDuration = 60): Promise<ThreadChannel | null> {
+  try {
+    // Prefer the Message#startThread API when available
+    const startThreadFn = (message as any).startThread;
+    if (typeof startThreadFn === "function") {
+      try {
+        const t = await startThreadFn.call(message, { name, autoArchiveDuration });
+        logger.info("Created thread with message.startThread", { messageId: message.id, threadId: (t as any)?.id });
+        return t as ThreadChannel;
+      } catch (err) {
+        logger.warn("message.startThread failed", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // Fallback: channel.threads.create()
+    const chAny = message.channel as any;
+    if (chAny && chAny.threads && typeof chAny.threads.create === "function") {
+      try {
+        // Try with startMessage (preferred) then without if it fails
+        try {
+          const t = await chAny.threads.create({ name, autoArchiveDuration, startMessage: message.id });
+          logger.info("Created thread with channel.threads.create (with startMessage)", { messageId: message.id, threadId: (t as any)?.id });
+          return t as ThreadChannel;
+        } catch (err) {
+          logger.warn("channel.threads.create with startMessage failed, trying without startMessage", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+          const t2 = await chAny.threads.create({ name, autoArchiveDuration });
+          logger.info("Created thread with channel.threads.create (without startMessage)", { messageId: message.id, threadId: (t2 as any)?.id });
+          return t2 as ThreadChannel;
+        }
+      } catch (err) {
+        logger.warn("channel.threads.create failed", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  } catch (err) {
+    logger.warn("Unhandled error while attempting to create thread", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+  }
+  return null;
+}
+
 async function generateSummaryWithRetry(url: string, context: {
   channelId: string;
   messageId: string;
@@ -420,17 +464,16 @@ async function processUrlWithProgress(
   await addReaction(message, PROCESSING_REACTION);
   
   try {
-    // Try to create a thread for progress updates
-    thread = await message.startThread({
-      name: formatThreadName(url),
-      autoArchiveDuration: 60, // Archive after 1 hour of inactivity
-    });
-    
-    logger.info("Created thread for URL processing", {
-      messageId: message.id,
-      threadId: thread.id,
-      url,
-    });
+    // Try to create a thread for progress updates with robust fallbacks
+    thread = await createThreadForMessage(message, formatThreadName(url), 60);
+
+    if (thread) {
+      logger.info("Created thread for URL processing", {
+        messageId: message.id,
+        threadId: thread.id,
+        url,
+      });
+    }
   } catch (error) {
     // Thread creation failed, log and continue without thread
     logger.warn("Failed to create thread for progress updates", {
@@ -600,28 +643,126 @@ async function processUrlWithProgress(
         const errorBody = finalResult.error || CLI_UNAVAILABLE_MESSAGE;
         const errorMsg = `❌ Failed to add ${displayUrl}\n\n${errorBody}`;
 
-        if (thread) {
+        // If the CLI returned structured diagnostic info (exitCode/stderr),
+        // build and post a more detailed report for maintainers in-thread.
+        if (!finalResult.success && (finalResult.exitCode !== undefined || finalResult.stderr)) {
           try {
-            await thread.send(errorMsg);
-            // Archive the thread after failure
-            await thread.setArchived(true);
-          } catch (error) {
-            logger.warn("Failed to send final error message to thread; falling back to channel reply", {
-              threadId: thread.id,
-              error: error instanceof Error ? error.message : String(error),
+            const cmd = `add --format ndjson ${url}`;
+            const report = buildCliErrorReport({
+              command: cmd,
+              args: [],
+              exitCode: finalResult.exitCode,
+              stderr: finalResult.stderr,
+              note: "Observed during processing of user-submitted URL",
             });
-            try {
+
+            if (thread) {
+              try {
+                await thread.send(report);
+                await thread.send(errorMsg);
+                await thread.setArchived(true).catch(() => {});
+              } catch (sendError) {
+                logger.warn("Failed to send CLI error report to thread; falling back to channel reply", {
+                  threadId: thread.id,
+                  error: sendError instanceof Error ? sendError.message : String(sendError),
+                });
+                try {
+                  await message.reply(report);
+                  await message.reply(errorMsg);
+                } catch (replyError) {
+                  logger.warn("Failed to send fallback CLI error report reply", {
+                    messageId: message.id,
+                    error: replyError instanceof Error ? replyError.message : String(replyError),
+                  });
+                }
+              }
+            } else {
+              // Try to create a dedicated thread for the error report using helper
+              const t = await createThreadForMessage(message, `CLI error: ${new URL(url).hostname}`, 60);
+              if (t) {
+                try {
+                  await t.send(report);
+                  await t.send(errorMsg);
+                  await t.setArchived(true).catch(() => {});
+                } catch (threadErr) {
+                  logger.warn("Failed to send CLI error report to created thread; falling back to reply", {
+                    messageId: message.id,
+                    threadId: t.id,
+                    error: threadErr instanceof Error ? threadErr.message : String(threadErr),
+                  });
+                  try {
+                    await message.reply(report);
+                    await message.reply(errorMsg);
+                  } catch (replyError) {
+                    logger.warn("Failed to reply with CLI error report", {
+                      messageId: message.id,
+                      error: replyError instanceof Error ? replyError.message : String(replyError),
+                    });
+                  }
+                }
+              } else {
+                // Last resort - reply in channel
+                try {
+                  await message.reply(report);
+                  await message.reply(errorMsg);
+                } catch (replyError) {
+                  logger.warn("Failed to reply with CLI error report (no thread available)", {
+                    messageId: message.id,
+                    error: replyError instanceof Error ? replyError.message : String(replyError),
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            logger.warn("Error while attempting to post CLI error report", { error: err instanceof Error ? err.message : String(err) });
+            // Fallback to the simple error message
+            if (thread) {
+              try {
+                await thread.send(errorMsg);
+                await thread.setArchived(true);
+              } catch (sendError) {
+                logger.warn("Failed to send final error message to thread; falling back to channel reply", {
+                  threadId: thread.id,
+                  error: sendError instanceof Error ? sendError.message : String(sendError),
+                });
+                try {
+                  await message.reply(errorMsg);
+                } catch (err2) {
+                  logger.warn("Failed to send fallback error reply to channel", {
+                    messageId: message.id,
+                    error: err2 instanceof Error ? err2.message : String(err2),
+                  });
+                }
+              }
+            } else {
               await message.reply(errorMsg);
-            } catch (err) {
-              logger.warn("Failed to send fallback error reply to channel", {
-                messageId: message.id,
-                error: err instanceof Error ? err.message : String(err),
-              });
             }
           }
         } else {
-          // Fallback to message reply if no thread
-          await message.reply(errorMsg);
+          // No structured diagnostics available - post a concise error message
+          if (thread) {
+            try {
+              await thread.send(errorMsg);
+              // Archive the thread after failure
+              await thread.setArchived(true);
+            } catch (error) {
+              logger.warn("Failed to send final error message to thread; falling back to channel reply", {
+                threadId: thread.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              try {
+                await message.reply(errorMsg);
+              } catch (err) {
+                logger.warn("Failed to send fallback error reply to channel", {
+                  messageId: message.id,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+          } else {
+            // Fallback to message reply if no thread
+            await message.reply(errorMsg);
+          }
         }
       }
     } else {

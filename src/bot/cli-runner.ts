@@ -96,6 +96,10 @@ export interface AddResult {
   id?: number;
   /** Timestamp if provided by CLI events */
   timestamp?: string;
+  /** Exit code from CLI if available */
+  exitCode?: number;
+  /** Stderr captured from CLI if available */
+  stderr?: string;
 }
 
 /**
@@ -492,6 +496,8 @@ export async function* runAddCommand(
         success: false,
         url,
         error: stderr.trim() || `CLI exited with code ${exitCode}`,
+        exitCode,
+        stderr,
       };
       return result;
     }
@@ -512,6 +518,8 @@ export async function* runAddCommand(
         title: lastEvent.title,
         id: eventId,
         timestamp: lastEvent.timestamp,
+        exitCode,
+        stderr,
       };
       return result;
     } else if (lastEvent?.phase === "failed") {
@@ -521,6 +529,8 @@ export async function* runAddCommand(
         error: lastEvent.message || "Unknown error during ingestion",
         id: eventId,
         timestamp: lastEvent.timestamp,
+        exitCode,
+        stderr,
       };
       return result;
     }
@@ -530,6 +540,8 @@ export async function* runAddCommand(
       success: false,
       url,
       error: stderr.trim() || "No progress events received",
+      exitCode,
+      stderr,
     };
     return result;
   } catch (error) {

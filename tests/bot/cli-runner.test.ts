@@ -270,8 +270,9 @@ describe("CLI Runner Module", () => {
 
   describe("setCliPath", () => {
     it("setCliPath is a no-op warning", () => {
-      // Function intentionally no longer mutates environment; it should not throw
+      // Function intentionally no longer mutates legacy env vars; it should not throw
       setCliPath("/new/path/to/sb");
+      // Only OB_CLI_PATH is used now; ensure legacy SB_CLI_PATH is not relied upon
       expect(process.env.SB_CLI_PATH).toBeUndefined();
     });
   });

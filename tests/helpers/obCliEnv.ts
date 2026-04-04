@@ -1,15 +1,15 @@
 /**
- * Test helpers to temporarily override OB_CLI_PATH (and related keys)
- * and ensure the environment and cli-runner internal state are restored.
+ * Test helpers to temporarily override OB_CLI_PATH and ensure the
+ * environment and cli-runner internal state are restored.
  */
-export type EnvSnapshot = { OB_CLI_PATH?: string; SB_CLI_PATH?: string };
+export type EnvSnapshot = { OB_CLI_PATH?: string };
 
 /**
  * Synchronously set OB_CLI_PATH and attempt to update cli-runner internal state.
  * Returns a restore function that will reset environment and cli-runner state.
  */
 export function setObCliPath(path?: string): () => void {
-  const prev: EnvSnapshot = { OB_CLI_PATH: process.env.OB_CLI_PATH, SB_CLI_PATH: process.env.SB_CLI_PATH };
+  const prev: EnvSnapshot = { OB_CLI_PATH: process.env.OB_CLI_PATH };
 
   if (path === undefined) delete process.env.OB_CLI_PATH;
   else process.env.OB_CLI_PATH = String(path);
@@ -36,7 +36,6 @@ export function setObCliPath(path?: string): () => void {
   return () => {
     // restore environment
     if (prev.OB_CLI_PATH === undefined) delete process.env.OB_CLI_PATH; else process.env.OB_CLI_PATH = prev.OB_CLI_PATH;
-    if (prev.SB_CLI_PATH === undefined) delete process.env.SB_CLI_PATH; else process.env.SB_CLI_PATH = prev.SB_CLI_PATH;
 
     // Attempt to restore cli-runner internal state (best-effort)
     (async () => {
@@ -58,7 +57,7 @@ export function setObCliPath(path?: string): () => void {
  * and restores environment and cli-runner internal state afterwards.
  */
 export async function withObCliPath<T>(path: string | undefined, fn: () => Promise<T> | T): Promise<T> {
-  const prev: EnvSnapshot = { OB_CLI_PATH: process.env.OB_CLI_PATH, SB_CLI_PATH: process.env.SB_CLI_PATH };
+  const prev: EnvSnapshot = { OB_CLI_PATH: process.env.OB_CLI_PATH };
 
   // Set env
   if (path === undefined) delete process.env.OB_CLI_PATH;
@@ -101,7 +100,6 @@ export async function withObCliPath<T>(path: string | undefined, fn: () => Promi
 
     // Restore env
     if (prev.OB_CLI_PATH === undefined) delete process.env.OB_CLI_PATH; else process.env.OB_CLI_PATH = prev.OB_CLI_PATH;
-    if (prev.SB_CLI_PATH === undefined) delete process.env.SB_CLI_PATH; else process.env.SB_CLI_PATH = prev.SB_CLI_PATH;
   }
 }
 

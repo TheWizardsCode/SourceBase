@@ -345,15 +345,28 @@ function runCliSubprocess(
   // Add remaining args
   cmdArgs.push(...args);
 
+  // Resolve how we will spawn the subprocess.
+  // If the configured CLI executable is a JavaScript file (e.g. a test shim),
+  // spawn Node and pass the script path as the first argument. This makes it
+  // easy to point OB_CLI_PATH at a local JS shim without requiring the shim
+  // to be executable on disk.
+  let spawnCmd: string = cliExecutable;
+  let spawnArgs: (string | number)[] = cmdArgs;
+  if (path.extname(String(cliExecutable)).toLowerCase() === ".js") {
+    // Use the running Node executable to invoke the script
+    spawnCmd = process.execPath;
+    spawnArgs = [cliExecutable, ...cmdArgs];
+  }
+
   // Debug: Log the exact command being spawned for troubleshooting
   try {
-    console.log(`[CLI Debug] Spawning command: ${cliExecutable} ${cmdArgs.map((a) => String(a)).join(" ")}`);
+    console.log(`[CLI Debug] Spawning command: ${spawnCmd} ${spawnArgs.map((a) => String(a)).join(" ")}`);
   } catch {
     // ignore any logging issues
   }
 
   // Spawn the subprocess
-  const subprocess = spawn(cliExecutable, cmdArgs, {
+  const subprocess = spawn(spawnCmd, spawnArgs as string[], {
     cwd,
     env: { ...process.env, ...env },
     stdio: ["ignore", "pipe", "pipe"],

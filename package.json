@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run tests/integration --runInBand",
     "start": "node dist/src/index.js",
     "start:dev": "tsx watch src/index.ts"
   },

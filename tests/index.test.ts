@@ -335,8 +335,8 @@ describe("index message handler integration", () => {
       autoArchiveDuration: 60,
     });
     expect(thread.send).toHaveBeenCalled();
+    // Only the progress-completed message should be posted (avoid duplicate success messages)
     expect(threadMessages).toContain("✅ Added to OpenBrain: `Useful Title`");
-    expect(threadMessages).toContain("✅ Added: `Useful Title`");
   });
 
   it("passes Discord context tags to spawn for ob add", async () => {

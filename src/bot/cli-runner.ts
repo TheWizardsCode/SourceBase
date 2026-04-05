@@ -490,12 +490,22 @@ export async function* runAddCommand(
   let lastEvent: AddProgressEvent | null = null;
 
   try {
-    // Yield progress events as they arrive
+    // Yield progress events as they arrive. Do not overwrite lastEvent when
+    // the CLI emits a progress object that lacks a `phase` field. Some CLI
+    // implementations may emit informational objects after completion which
+    // would otherwise clobber a previously-seen `completed` event and cause
+    // the overall result to be considered a failure despite exitCode 0.
     for await (const line of stdoutIterator) {
       try {
         const event = JSON.parse(line) as AddProgressEvent;
-        lastEvent = event;
+        // Always yield the event for UI updates
         yield event;
+        // Only update lastEvent when a phase is present and non-empty so we
+        // retain the most recent meaningful phase (e.g. 'completed' or
+        // 'failed').
+        if (event && typeof event.phase === "string" && event.phase.trim() !== "") {
+          lastEvent = event;
+        }
       } catch {
         // Ignore lines that aren't valid JSON (e.g., error messages)
       }

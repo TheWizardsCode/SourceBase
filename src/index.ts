@@ -29,8 +29,40 @@ const logger = new Logger(config.LOG_LEVEL as any);
 /**
  * Format a CLI progress event into a user-friendly Discord message
  */
-function formatProgressMessage(event: AddProgressEvent): string {
-  switch (event.phase) {
+export function formatProgressMessage(event: AddProgressEvent): string {
+  // Normalize phase: avoid printing literal 'undefined' and handle
+  // events that do not include a phase field more helpfully.
+  const phase = typeof event.phase === "string" && event.phase.trim() !== "" ? event.phase : undefined;
+
+  if (!phase) {
+    // If the CLI provided an explanatory message, surface it as an error-like
+    // message so users and maintainers see something actionable in the thread.
+    if (event.message) {
+      const m = String(event.message).trim();
+      // Keep output reasonably sized for Discord
+      const truncated = m.length > 1500 ? `${m.slice(0, 1500)}…` : m;
+      // Include title or url context when available
+      if (event.title) return `❌ ${truncated} (${event.title})`;
+      if (event.url) return `❌ ${truncated} (<${event.url}>)`;
+      return `❌ ${truncated}`;
+    }
+
+    // No explicit message - include any small set of identifying fields so
+    // maintainers have context instead of seeing 'undefined'.
+    const parts: string[] = [];
+    if (event.id !== undefined) parts.push(`id:${event.id}`);
+    if (event.title) parts.push(`title:${event.title}`);
+    if (event.url) parts.push(`url:${event.url}`);
+    if (event.timestamp) parts.push(`ts:${event.timestamp}`);
+
+    if (parts.length > 0) {
+      return `⏳ Processing: unknown (${parts.join(", ")})`;
+    }
+
+    return `⏳ Processing: unknown event`;
+  }
+
+  switch (phase) {
     case "downloading":
       return "⏳ Downloading content...";
     case "extracting":
@@ -42,7 +74,15 @@ function formatProgressMessage(event: AddProgressEvent): string {
     case "failed":
       return `❌ Failed: ${event.message || "Unknown error"}`;
     default:
-      return `⏳ Processing: ${event.phase}`;
+      // For unknown but present phases, include any short message text
+      // the CLI might have provided to give more context.
+      const base = `⏳ Processing: ${phase}`;
+      if (event.message) {
+        const m = String(event.message).trim();
+        const truncated = m.length > 1200 ? `${m.slice(0, 1200)}…` : m;
+        return `${base}\n\n${truncated}`;
+      }
+      return base;
   }
 }
 
@@ -494,6 +534,10 @@ async function processUrlWithProgress(
     });
     
     let lastPhase: string | null = null;
+    // Once we see a terminal phase ('completed' or 'failed') we should
+    // suppress any subsequent progress updates emitted by the CLI to avoid
+    // confusing the user with post-completion informational objects.
+    let terminalPhaseSeen = false;
     let eventCount = 0;
     let finalResult: AddResult | undefined;
     
@@ -518,17 +562,29 @@ async function processUrlWithProgress(
       // Process yielded progress event
       const event = iteration.value;
       eventCount++;
-      logger.info("Received CLI progress event", { 
-        messageId: message.id, 
-        url, 
+      logger.info("Received CLI progress event", {
+        messageId: message.id,
+        url,
         phase: event.phase,
-        eventCount 
+        eventCount,
       });
-      
+
+      // If we've already observed a terminal phase, ignore any further
+      // progress events to avoid confusing follow-up messages (some CLI
+      // implementations emit informational objects after completion).
+      if (terminalPhaseSeen) {
+        logger.debug("Ignoring CLI progress event after terminal phase", {
+          messageId: message.id,
+          url,
+          eventCount,
+        });
+        continue;
+      }
+
       // Only send update if phase changed (avoid spam)
       if (event.phase !== lastPhase) {
         lastPhase = event.phase;
-        
+
         const progressMsg = formatProgressMessage(event);
 
         // Always ensure URLs shown to users are wrapped in backticks to avoid embeds.
@@ -574,6 +630,16 @@ async function processUrlWithProgress(
             });
           }
         }
+
+        // If this event indicates a terminal state, mark it so we ignore
+        // any subsequent non-actionable events.
+        try {
+          if (event.phase === "completed" || event.phase === "failed") {
+            terminalPhaseSeen = true;
+          }
+        } catch {
+          // ignore
+        }
       }
     }
     
@@ -597,28 +663,37 @@ async function processUrlWithProgress(
 
         let summaryTargetThread: ThreadChannel | null = thread;
 
-        if (thread) {
-          try {
-            await thread.send(successMsg);
-          } catch (error) {
-            logger.warn("Failed to send final success message to thread; falling back to channel reply", {
-              threadId: thread.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            summaryTargetThread = null;
-            // Fallback to channel reply
+        // If we already observed a 'completed' progress event earlier and
+        // posted it to the thread/channel, avoid posting a duplicate final
+        // success message. We detect this by checking the lastPhase value.
+        const alreadyCompleted = lastPhase === "completed";
+
+        if (!alreadyCompleted) {
+          if (thread) {
             try {
-              await message.reply(successMsg);
-            } catch (err) {
-              logger.warn("Failed to send fallback success reply to channel", {
-                messageId: message.id,
-                error: err instanceof Error ? err.message : String(err),
+              await thread.send(successMsg);
+            } catch (error) {
+              logger.warn("Failed to send final success message to thread; falling back to channel reply", {
+                threadId: thread.id,
+                error: error instanceof Error ? error.message : String(error),
               });
+              summaryTargetThread = null;
+              // Fallback to channel reply
+              try {
+                await message.reply(successMsg);
+              } catch (err) {
+                logger.warn("Failed to send fallback success reply to channel", {
+                  messageId: message.id,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
             }
+          } else {
+            // Fallback to message reply if no thread
+            await message.reply(successMsg);
           }
         } else {
-          // Fallback to message reply if no thread
-          await message.reply(successMsg);
+          logger.debug("Skipping duplicate final success message because completed event was already posted", { messageId: message.id, url });
         }
 
         await sendGeneratedSummary(message, summaryTargetThread, finalResult);
@@ -658,7 +733,7 @@ async function processUrlWithProgress(
 
             if (thread) {
               try {
-                await thread.send(report);
+                await postCliErrorReport(thread, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
                 await thread.send(errorMsg);
                 await thread.setArchived(true).catch(() => {});
               } catch (sendError) {
@@ -667,7 +742,7 @@ async function processUrlWithProgress(
                   error: sendError instanceof Error ? sendError.message : String(sendError),
                 });
                 try {
-                  await message.reply(report);
+                  await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
                   await message.reply(errorMsg);
                 } catch (replyError) {
                   logger.warn("Failed to send fallback CLI error report reply", {
@@ -681,7 +756,7 @@ async function processUrlWithProgress(
               const t = await createThreadForMessage(message, `CLI error: ${new URL(url).hostname}`, 60);
               if (t) {
                 try {
-                  await t.send(report);
+                  await postCliErrorReport(t, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
                   await t.send(errorMsg);
                   await t.setArchived(true).catch(() => {});
                 } catch (threadErr) {
@@ -691,7 +766,7 @@ async function processUrlWithProgress(
                     error: threadErr instanceof Error ? threadErr.message : String(threadErr),
                   });
                   try {
-                    await message.reply(report);
+                    await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
                     await message.reply(errorMsg);
                   } catch (replyError) {
                     logger.warn("Failed to reply with CLI error report", {
@@ -703,7 +778,7 @@ async function processUrlWithProgress(
               } else {
                 // Last resort - reply in channel
                 try {
-                  await message.reply(report);
+                  await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
                   await message.reply(errorMsg);
                 } catch (replyError) {
                   logger.warn("Failed to reply with CLI error report (no thread available)", {
@@ -934,6 +1009,54 @@ async function suppressEmbedsIfPermitted(message: Message): Promise<boolean> {
 
 const DISCORD_CONTENT_LIMIT = 1900;
 const MARKDOWN_WRAP_WIDTH = 80;
+
+/**
+ * Safely post a potentially large CLI diagnostic report to a Discord target.
+ * If the report is within the content limit, post as a normal message.
+ * If it exceeds the limit, post a short explanatory message and attach
+ * the full report as a file to avoid Discord's message length restriction.
+ */
+export async function postCliErrorReport(target: any, report: string, shortIntro?: string): Promise<void> {
+  try {
+    if (!report) return;
+
+    if (report.length <= DISCORD_CONTENT_LIMIT) {
+      if (typeof target.send === "function") {
+        await target.send(report);
+        return;
+      }
+      if (typeof target.reply === "function") {
+        await target.reply(report);
+        return;
+      }
+      return;
+    }
+
+    // Report too large for a single Discord message - send as attachment.
+    const intro = shortIntro || "Detailed CLI diagnostic attached.";
+    const content = `${intro}\n\n(Full report attached as cli-error-report.txt)`;
+    const file = { attachment: Buffer.from(report, "utf8"), name: "cli-error-report.txt" };
+
+    if (typeof target.send === "function") {
+      await target.send({ content, files: [file] } as any);
+      return;
+    }
+    if (typeof target.reply === "function") {
+      await target.reply({ content, files: [file] } as any);
+      return;
+    }
+  } catch (err) {
+    logger.warn("Failed to post CLI error report", { error: err instanceof Error ? err.message : String(err) });
+    // Best-effort fallback: try to send a truncated inline excerpt
+    try {
+      const truncated = report.slice(0, Math.max(0, DISCORD_CONTENT_LIMIT - 50)) + "…";
+      if (typeof target.send === "function") await target.send(truncated);
+      else if (typeof target.reply === "function") await target.reply(truncated);
+    } catch {
+      // ignore
+    }
+  }
+}
 
 function wrapLineAtNearestSpace(line: string, width: number): string[] {
   if (line.length <= width || width <= 0) {
@@ -1804,14 +1927,14 @@ const bot = new DiscordBot({
             if (typeof message.startThread === "function") {
               try {
                 const t = await message.startThread({ name: `CLI error: ${new URL(seed).hostname}`, autoArchiveDuration: 60 });
-                await t.send(report);
+                await postCliErrorReport(t, report, "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report.");
                 await t.setArchived(true).catch(() => {});
               } catch (threadErr) {
                 logger.warn("Failed to create thread for CLI queue error; falling back to reply", { error: threadErr instanceof Error ? threadErr.message : String(threadErr) });
-                await message.reply(report);
+                await postCliErrorReport(message, report, "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report.");
               }
             } else {
-              await message.reply(report);
+              await postCliErrorReport(message, report, "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report.");
             }
           } catch (err) {
             logger.warn("Failed to post detailed CLI error report for queue command", { error: err instanceof Error ? err.message : String(err) });

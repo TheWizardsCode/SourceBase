@@ -1858,6 +1858,112 @@ const bot = new DiscordBot({
       authorId: message.author.id
     });
     
+    // Handle inline `ob add <text>` message triggers. This allows users to
+    // paste raw text and instruct the bot to ingest it via the OpenBrain CLI.
+    try {
+      // Match either `ob add <text>` or a bare `ob add` (so users can reply
+      // to an existing message with `ob add`). Capture group 1 is the
+      // optional inline payload when provided.
+      const obAddMatch =
+        typeof message.content === "string" &&
+        message.content.match(/^\s*ob\s+add(?:\s+([\s\S]*))?$/i);
+      if (obAddMatch) {
+      let payload = String(obAddMatch[1] || "").trim();
+
+      // If payload is empty, attempt to use the referenced/replied-to message's content
+      let fetchRefFailed = false;
+      if (!payload && message.reference && (message.reference as any).messageId) {
+        try {
+          const refId = (message.reference as any).messageId;
+          const chAny = message.channel as any;
+          if (chAny && chAny.messages && typeof chAny.messages.fetch === "function") {
+            const refMsg = await chAny.messages.fetch(refId);
+            payload = (refMsg?.content || "").trim();
+          }
+        } catch (err) {
+          fetchRefFailed = true;
+          logger.warn("Failed to fetch referenced message for ob add", {
+            messageId: message.id,
+            referencedMessageId: (message.reference as any).messageId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      if (!payload) {
+        if (fetchRefFailed) {
+          // Inform the user the bot couldn't fetch the referenced message so
+          // they know to either paste the text or check channel permissions.
+          await message.reply(
+            "\u26a0\ufe0f I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again."
+          );
+        } else {
+          await message.reply("\u274c Please provide text to add, for example: `ob add <text>` or reply to a message with `ob add`.");
+        }
+        return;
+      }
+
+        // Enforce a conservative size limit to avoid large payload abuse. Default
+        // to 64KB but allow overriding via environment for tests or special hosts.
+        const MAX_ADD_BYTES = Number(process.env.OB_ADD_MAX_BYTES || 64 * 1024);
+      if (Buffer.byteLength(payload, "utf8") > MAX_ADD_BYTES) {
+        logger.warn("ob add payload too large", { messageId: message.id, size: Buffer.byteLength(payload, "utf8"), max: MAX_ADD_BYTES });
+        await message.reply(`\u26a0\ufe0f Text too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the text into smaller pieces.`);
+        return;
+      }
+
+      // Check CLI availability before creating temporary files
+      if (!(await checkCliAvailability(message))) {
+        logger.warn("ob add requested but CLI unavailable", { messageId: message.id });
+        return;
+      }
+
+        // Write payload to a secure temporary file and invoke the existing
+        // threaded progress flow by passing a file:// URL to the add command.
+        const { makeTempFileName } = await import("./discord/utils.js");
+        const fs = await import("fs/promises");
+        const tmpName = makeTempFileName("ob-add", "txt");
+
+        try {
+          await fs.writeFile(tmpName, payload, { encoding: "utf8", mode: 0o600 });
+        } catch (err) {
+          logger.error("Failed to write temporary file for ob add", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+          await message.reply("\u274c Failed to prepare temporary file for ingestion. Please try again or report this to the maintainers.");
+          return;
+        }
+
+        const fileUrl = pathToFileURL(tmpName).toString();
+
+      try {
+        try {
+          await processUrlWithProgress(message, fileUrl);
+        } catch (err) {
+          // processUrlWithProgress performs a lot of its own error handling
+          // but be defensive here in case it throws unexpectedly.
+          logger.error("Error during ob add processing", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+          try {
+            await message.reply("\u274c Failed to ingest text — an internal error occurred. Please try again later.");
+          } catch {
+            // ignore reply failures
+          }
+          throw err;
+        }
+      } finally {
+        try {
+          await fs.unlink(tmpName).catch(() => {});
+        } catch {
+          // best-effort cleanup
+        }
+      }
+
+        return;
+      }
+    } catch (err) {
+      // Defensive: ensure any unexpected error during ob add handling does not
+      // prevent processing of other message types.
+      logger.warn("Error while attempting to handle ob add message", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+    }
+    
     // Handle crawl commands
     if (isCrawlCommand(message.content)) {
       logger.info("Crawl command detected", { messageId: message.id });

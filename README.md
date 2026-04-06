@@ -20,6 +20,29 @@ SourceBase automatically extracts URLs from Discord messages, fetches content me
 - 📊 **Backfill Queue**: Automatic retry for failed operations with SLA tracking
 - 🎭 **Discord Reactions**: Success/failure feedback on message processing
 
+### Discord Inline Ingestion (ob add)
+
+- The bot supports ingesting raw text directly from Discord using the `ob add` trigger.
+- Two supported patterns:
+  - Inline: `ob add <text>` — paste the text you want the bot to ingest on the same message.
+  - Reply: Post the text in one message, then reply to that message with `ob add` to instruct the bot to ingest the referenced message's content.
+
+- Behavior and limits:
+  - The bot writes the provided text to a temporary file and calls the OpenBrain CLI (`ob add`) with a `file://` URL so the existing CLI-based ingestion pipeline is reused.
+  - To avoid abuse, the bot enforces a conservative default size limit of 64 KiB for direct text ingestion. You can override this limit with the environment variable `OB_ADD_MAX_BYTES` (value in bytes).
+  - If the bot cannot fetch the referenced message (reply flow), it will reply with a helpful message explaining the permission issue and how to proceed.
+  - If the CLI is unavailable, the bot will notify the user with a friendly error message.
+
+Example:
+
+```text
+Paste long text into a message and then reply to it with:
+  ob add
+
+Or post the text inline:
+  ob add The quick brown fox jumps over the lazy dog.
+```
+
 ## Quick Start
 
 Want to get running quickly? Here's the minimal setup:

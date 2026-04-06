@@ -540,6 +540,11 @@ async function processUrlWithProgress(
     let terminalPhaseSeen = false;
     let eventCount = 0;
     let finalResult: AddResult | undefined;
+    // Keep a reference to the last posted Discord message so we can
+    // append the created item link/ID to it when the CLI returns the ID.
+    // In real runtime this will be a discord.js Message; in tests the
+    // mocked send/reply helpers may return undefined which we handle.
+    let lastPostedMessage: any = null;
     
     // Process progress events using manual iteration to capture return value
     logger.info("Waiting for CLI progress events...", { messageId: message.id, url });
@@ -582,10 +587,10 @@ async function processUrlWithProgress(
       }
 
       // Only send update if phase changed (avoid spam)
-      if (event.phase !== lastPhase) {
-        lastPhase = event.phase;
+        if (event.phase !== lastPhase) {
+          lastPhase = event.phase;
 
-        const progressMsg = formatProgressMessage(event);
+          const progressMsg = formatProgressMessage(event);
 
         // Always ensure URLs shown to users are wrapped in backticks to avoid embeds.
         // If event contains a url or title, prefer showing the title wrapped in ticks.
@@ -599,37 +604,42 @@ async function processUrlWithProgress(
           }
         })();
 
-        if (thread) {
-          try {
-            await thread.send(safeProgressMsg);
-          } catch (error) {
-            logger.warn("Failed to send progress update to thread; falling back to channel reply", {
-              threadId: thread.id,
-              phase: event.phase,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            // Fallback: reply in channel so user still receives updates
+          if (thread) {
             try {
-              await message.reply(safeProgressMsg);
+              // Capture the returned message when possible so we can edit it
+              // later to append the created item link/ID.
+              const posted = await thread.send(safeProgressMsg);
+              lastPostedMessage = posted ?? lastPostedMessage;
+            } catch (error) {
+              logger.warn("Failed to send progress update to thread; falling back to channel reply", {
+                threadId: thread.id,
+                phase: event.phase,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              // Fallback: reply in channel so user still receives updates
+              try {
+                const posted = await message.reply(safeProgressMsg);
+                lastPostedMessage = posted ?? lastPostedMessage;
+              } catch (err) {
+                logger.warn("Failed to send fallback progress reply to channel", {
+                  messageId: message.id,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+          } else {
+            // No thread available -> send progress updates to channel (safe)
+            try {
+              const posted = await message.reply(safeProgressMsg);
+              lastPostedMessage = posted ?? lastPostedMessage;
             } catch (err) {
-              logger.warn("Failed to send fallback progress reply to channel", {
+              logger.warn("Failed to send progress update to channel", {
                 messageId: message.id,
+                phase: event.phase,
                 error: err instanceof Error ? err.message : String(err),
               });
             }
           }
-        } else {
-          // No thread available -> send progress updates to channel (safe)
-          try {
-            await message.reply(safeProgressMsg);
-          } catch (err) {
-            logger.warn("Failed to send progress update to channel", {
-              messageId: message.id,
-              phase: event.phase,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
 
         // If this event indicates a terminal state, mark it so we ignore
         // any subsequent non-actionable events.
@@ -643,58 +653,99 @@ async function processUrlWithProgress(
       }
     }
     
-    if (finalResult) {
-      logger.info("CLI processing complete", { 
-        messageId: message.id, 
-        url, 
-        success: finalResult.success,
-        title: finalResult.title,
-        error: finalResult.error
-      });
-      
-      if (finalResult.success) {
-        // Remove processing reaction and add success reaction
-        await removeReaction(message, PROCESSING_REACTION);
-        await addReaction(message, SUCCESS_REACTION);
-        
-        // Ensure title or URL displayed is wrapped in backticks to avoid embeds
-        const displayName = finalResult.title ? `\`${finalResult.title}\`` : `\`${url}\``;
-        const successMsg = `✅ Added: ${displayName}`;
+        if (finalResult) {
+          logger.info("CLI processing complete", { 
+            messageId: message.id, 
+            url, 
+            success: finalResult.success,
+            title: finalResult.title,
+            error: finalResult.error
+          });
+          
+          if (finalResult.success) {
+            // Remove processing reaction and add success reaction
+            await removeReaction(message, PROCESSING_REACTION);
+            await addReaction(message, SUCCESS_REACTION);
+            
+            // Ensure title or URL displayed is wrapped in backticks to avoid embeds
+            const displayName = finalResult.title ? `\`${finalResult.title}\`` : `\`${url}\``;
+            // If we already have an item id, prepare an item link for the
+            // immediate confirmation so users see the created item id/link
+            // as soon as possible.
+            let successMsg = `✅ Added: ${displayName}`;
+            const itemId = finalResult.id;
+            const itemLink = itemId !== undefined ? buildOpenBrainItemLink(itemId, finalResult.url || url) : undefined;
+            if (itemLink) {
+              // Use an angle-bracketed link to avoid Discord embeds
+              successMsg = `✅ Added: ${displayName} — OpenBrain item: <${itemLink}>`;
+            }
 
-        let summaryTargetThread: ThreadChannel | null = thread;
+            let summaryTargetThread: ThreadChannel | null = thread;
 
-        // If we already observed a 'completed' progress event earlier and
-        // posted it to the thread/channel, avoid posting a duplicate final
-        // success message. We detect this by checking the lastPhase value.
-        const alreadyCompleted = lastPhase === "completed";
+            // If we already observed a 'completed' progress event earlier and
+            // posted it to the thread/channel, avoid posting a duplicate final
+            // success message. We detect this by checking the lastPhase value.
+            const alreadyCompleted = lastPhase === "completed";
 
-        if (!alreadyCompleted) {
-          if (thread) {
-            try {
-              await thread.send(successMsg);
-            } catch (error) {
-              logger.warn("Failed to send final success message to thread; falling back to channel reply", {
-                threadId: thread.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-              summaryTargetThread = null;
-              // Fallback to channel reply
-              try {
-                await message.reply(successMsg);
-              } catch (err) {
-                logger.warn("Failed to send fallback success reply to channel", {
-                  messageId: message.id,
-                  error: err instanceof Error ? err.message : String(err),
-                });
+            if (!alreadyCompleted) {
+              if (thread) {
+                try {
+                  const posted = await thread.send(successMsg);
+                  // capture the final posted message when possible
+                  lastPostedMessage = posted ?? lastPostedMessage;
+                } catch (error) {
+                  logger.warn("Failed to send final success message to thread; falling back to channel reply", {
+                    threadId: thread.id,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                  summaryTargetThread = null;
+                  // Fallback to channel reply
+                  try {
+                    const posted = await message.reply(successMsg);
+                    lastPostedMessage = posted ?? lastPostedMessage;
+                  } catch (err) {
+                    logger.warn("Failed to send fallback success reply to channel", {
+                      messageId: message.id,
+                      error: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                }
+              } else {
+                // Fallback to message reply if no thread
+                const posted = await message.reply(successMsg);
+                lastPostedMessage = posted ?? lastPostedMessage;
+              }
+            } else {
+              // We previously posted a 'completed' progress message. If the
+              // CLI also returned an item id, append it to the posted message
+              // so users see the created item id immediately. If editing the
+              // posted message is not possible, send a concise follow-up.
+              if (itemId !== undefined) {
+                try {
+                  const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
+                  if (lastPostedMessage && typeof lastPostedMessage.edit === "function") {
+                    // Try to augment the existing message
+                    const prevContent = typeof lastPostedMessage.content === "string" ? lastPostedMessage.content : successMsg;
+                    try {
+                      await lastPostedMessage.edit(prevContent + appended);
+                    } catch (err) {
+                      logger.warn("Failed to edit completed message with item id", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+                      // Fallback: post a short follow-up containing the item link
+                      if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
+                      else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
+                    }
+                  } else {
+                    // Cannot edit previous message – send a short follow-up
+                    if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
+                    else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
+                  }
+                } catch (err) {
+                  logger.warn("Failed to post item link follow-up", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+                }
+              } else {
+                logger.debug("Skipping duplicate final success message because completed event was already posted", { messageId: message.id, url });
               }
             }
-          } else {
-            // Fallback to message reply if no thread
-            await message.reply(successMsg);
-          }
-        } else {
-          logger.debug("Skipping duplicate final success message because completed event was already posted", { messageId: message.id, url });
-        }
 
         await sendGeneratedSummary(message, summaryTargetThread, finalResult);
 

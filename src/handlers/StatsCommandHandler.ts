@@ -118,17 +118,17 @@ export class StatsCommandHandler implements SlashCommandHandler {
     const processedCount = stats.processedCount;
     const pendingCount = stats.pendingCount;
     const failedCount = stats.failedCount;
-    const successRate = totalLinks > 0 ? ((processedCount / totalLinks) * 100).toFixed(1) : "0.0";
+    const successRate = totalLinks > 0 ? ((processedCount / totalLinks) * 100) : 0;
+    const failureRate = totalLinks > 0 ? ((failedCount / totalLinks) * 100) : 0;
 
     const lines: string[] = [];
     lines.push("📊 OpenBrain statistics");
     lines.push("");
     lines.push(`**Totals**`);
     lines.push(`- Total links: ${totalLinks.toLocaleString()}`);
-    lines.push(`- Processed: ${processedCount.toLocaleString()}`);
+    lines.push(`- Processed: ${processedCount.toLocaleString()} (${successRate.toFixed(1)}%)`);
     lines.push(`- Pending: ${pendingCount.toLocaleString()}`);
-    lines.push(`- Failed: ${failedCount.toLocaleString()}`);
-    lines.push(`- Success rate: ${successRate}%`);
+    lines.push(`- Failed: ${failedCount.toLocaleString()} (${failureRate.toFixed(1)}%)`);
 
     // Attempt to render time-based breakdown if available. Support multiple
     // possible field namings (timeBased, time_based, timebased).
@@ -150,9 +150,18 @@ export class StatsCommandHandler implements SlashCommandHandler {
       if (last24 !== undefined || last7 !== undefined || last30 !== undefined) {
         lines.push("");
         lines.push(`**By time**`);
-        if (last24 !== undefined) lines.push(`- Last 24 hours: ${last24.toLocaleString()}`);
-        if (last7 !== undefined) lines.push(`- Last 7 days: ${last7.toLocaleString()}`);
-        if (last30 !== undefined) lines.push(`- Last 30 days: ${last30.toLocaleString()}`);
+        if (last24 !== undefined) {
+          const pct = totalLinks > 0 ? ((last24 / totalLinks) * 100).toFixed(1) : "0.0";
+          lines.push(`- Last 24 hours: ${last24.toLocaleString()} (${pct}%)`);
+        }
+        if (last7 !== undefined) {
+          const pct = totalLinks > 0 ? ((last7 / totalLinks) * 100).toFixed(1) : "0.0";
+          lines.push(`- Last 7 days: ${last7.toLocaleString()} (${pct}%)`);
+        }
+        if (last30 !== undefined) {
+          const pct = totalLinks > 0 ? ((last30 / totalLinks) * 100).toFixed(1) : "0.0";
+          lines.push(`- Last 30 days: ${last30.toLocaleString()} (${pct}%)`);
+        }
       }
     }
 

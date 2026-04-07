@@ -68,6 +68,12 @@ describe("slash interaction handlers", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: class MockCliRunnerError extends Error {},
         };
@@ -96,6 +102,13 @@ describe("slash interaction handlers", () => {
   });
 
   it("routes /stats through StatsCommandHandler", async () => {
+    const runStatsCommandMock = vi.fn(async () => ({
+      totalLinks: 100,
+      processedCount: 80,
+      pendingCount: 15,
+      failedCount: 5,
+    }));
+
     const handler = await loadInteractionHandler(async () => {
       await vi.doMock("../../src/bot/cli-runner.js", () => {
         return {
@@ -103,13 +116,14 @@ describe("slash interaction handlers", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: runStatsCommandMock,
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: class MockCliRunnerError extends Error {},
         };
       });
     });
 
-    const replies: string[] = [];
+    const edits: string[] = [];
     const fakeInteraction: any = {
       isCommand: () => true,
       commandName: "stats",
@@ -117,15 +131,30 @@ describe("slash interaction handlers", () => {
       user: { id: "user-1" },
       channelId: "chan-1",
       deferReply: vi.fn(async () => {}),
-      editReply: vi.fn(async (_content: string) => {}),
+      id: "interaction-1",
+      editReply: vi.fn(async (content: string) => edits.push(content)),
       fetchReply: vi.fn(async () => ({ id: "posted-1" })),
-      reply: vi.fn(async (content: string) => replies.push(content)),
+      reply: vi.fn(async (_content: string) => {}),
     };
 
     await handler(fakeInteraction);
 
-    expect(replies).toContain(
-      "Stats functionality temporarily unavailable - CLI has been extracted to openBrain repository."
+    expect(fakeInteraction.deferReply).toHaveBeenCalledTimes(1);
+    expect(runStatsCommandMock).toHaveBeenCalledWith({
+      channelId: "chan-1",
+      messageId: "interaction-1",
+      authorId: "user-1",
+    });
+    expect(edits).toContain(
+      [
+        "📊 OpenBrain statistics",
+        "",
+        "Total links: 100",
+        "Processed: 80",
+        "Pending: 15",
+        "Failed: 5",
+        "Success rate: 80.0%",
+      ].join("\n")
     );
   });
 
@@ -148,6 +177,12 @@ describe("slash interaction handlers", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: class MockCliRunnerError extends Error {},
         };
@@ -199,6 +234,12 @@ describe("slash interaction handlers", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: class MockCliRunnerError extends Error {},
         };
@@ -252,6 +293,12 @@ describe("slash interaction handlers", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: class MockCliRunnerError extends Error {},
         };
@@ -292,6 +339,12 @@ describe("slash interaction handlers", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: class MockCliRunnerError extends Error {},
         };
@@ -340,6 +393,12 @@ describe("slash interaction handlers", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: class MockCliRunnerError extends Error {},
         };

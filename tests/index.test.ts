@@ -126,6 +126,12 @@ describe("index message handler integration", () => {
             url,
             summary: "Mock summary",
           })),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -169,6 +175,12 @@ describe("index message handler integration", () => {
             success: true,
             url,
             summary: "Mock summary",
+          })),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
           })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
@@ -218,6 +230,12 @@ describe("index message handler integration", () => {
             url,
             summary: "Mock summary",
           })),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -262,6 +280,12 @@ describe("index message handler integration", () => {
             success: true,
             url,
             summary: "Mock summary",
+          })),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
           })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
@@ -309,6 +333,12 @@ describe("index message handler integration", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: runQueueCommandMock,
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           runCliCommand: vi.fn(),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
@@ -365,6 +395,12 @@ describe("index message handler integration", () => {
             success: true,
             url,
             summary: "Mock summary",
+          })),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
           })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
@@ -477,6 +513,12 @@ describe("index message handler integration", () => {
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: runSummaryCommandMock,
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -543,6 +585,12 @@ describe("index message handler integration", () => {
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: runSummaryCommandMock,
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -599,6 +647,12 @@ describe("index message handler integration", () => {
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: runSummaryCommandMock,
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };

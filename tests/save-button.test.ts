@@ -45,6 +45,12 @@ describe("Save briefing button interaction", () => {
       runAddCommand: vi.fn(),
       runQueueCommand: vi.fn(),
       runSummaryCommand: vi.fn(),
+      runStatsCommand: vi.fn(async () => ({
+        totalLinks: 0,
+        processedCount: 0,
+        pendingCount: 0,
+        failedCount: 0,
+      })),
       isCliAvailable: vi.fn(async () => true),
       CliRunnerError: class MockCliRunnerError extends Error {},
     }));
@@ -102,6 +108,12 @@ describe("Save briefing button interaction", () => {
       runAddCommand: vi.fn(),
       runQueueCommand: vi.fn(),
       runSummaryCommand: vi.fn(),
+      runStatsCommand: vi.fn(async () => ({
+        totalLinks: 0,
+        processedCount: 0,
+        pendingCount: 0,
+        failedCount: 0,
+      })),
       isCliAvailable: vi.fn(async () => true),
       CliRunnerError: class MockCliRunnerError extends Error {},
     }));
@@ -178,6 +190,12 @@ describe("Save briefing button interaction", () => {
       runAddCommand: vi.fn(),
       runQueueCommand: vi.fn(),
       runSummaryCommand: vi.fn(),
+      runStatsCommand: vi.fn(async () => ({
+        totalLinks: 0,
+        processedCount: 0,
+        pendingCount: 0,
+        failedCount: 0,
+      })),
       isCliAvailable: vi.fn(async () => true),
       CliRunnerError: class MockCliRunnerError extends Error {},
     }));

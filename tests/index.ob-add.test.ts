@@ -84,6 +84,12 @@ describe("ob add message handler failure modes", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -110,6 +116,12 @@ describe("ob add message handler failure modes", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };
@@ -134,6 +146,12 @@ describe("ob add message handler failure modes", () => {
           runAddCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
           isCliAvailable: vi.fn(async () => true),
           CliRunnerError: MockCliRunnerError,
         };

@@ -45,11 +45,12 @@ export class StatsCommandHandler implements SlashCommandHandler {
           await command.editReply(this.formatStatsMessage(stats as StatsResult));
         } else if (typeof (stats as any).totalContents === "number") {
           // Legacy/OpenBrain older schema - map fields
-          const mapped: StatsResult = {
+          const mapped: StatsResult & { timeBased?: any } = {
             totalLinks: (stats as any).totalContents,
             processedCount: (stats as any).withEmbeddings ?? 0,
             pendingCount: ((stats as any).totalContents || 0) - ((stats as any).withEmbeddings || 0),
             failedCount: 0,
+            timeBased: (stats as any).timeBased ?? (stats as any).time_based,
           };
           await command.editReply(this.formatStatsMessage(mapped));
         } else {
@@ -119,14 +120,42 @@ export class StatsCommandHandler implements SlashCommandHandler {
     const failedCount = stats.failedCount;
     const successRate = totalLinks > 0 ? ((processedCount / totalLinks) * 100).toFixed(1) : "0.0";
 
-    return [
-      "📊 OpenBrain statistics",
-      "",
-      `Total links: ${totalLinks.toLocaleString()}`,
-      `Processed: ${processedCount.toLocaleString()}`,
-      `Pending: ${pendingCount.toLocaleString()}`,
-      `Failed: ${failedCount.toLocaleString()}`,
-      `Success rate: ${successRate}%`,
-    ].join("\n");
+    const lines: string[] = [];
+    lines.push("📊 OpenBrain statistics");
+    lines.push("");
+    lines.push(`**Totals**`);
+    lines.push(`- Total links: ${totalLinks.toLocaleString()}`);
+    lines.push(`- Processed: ${processedCount.toLocaleString()}`);
+    lines.push(`- Pending: ${pendingCount.toLocaleString()}`);
+    lines.push(`- Failed: ${failedCount.toLocaleString()}`);
+    lines.push(`- Success rate: ${successRate}%`);
+
+    // Attempt to render time-based breakdown if available. Support multiple
+    // possible field namings (timeBased, time_based, timebased).
+    const tb = (stats as any).timeBased ?? (stats as any).time_based ?? (stats as any).timebased ?? (stats as any).time ?? null;
+    const asNumber = (v: unknown): number | undefined => {
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string" && v.trim() !== "") {
+        const n = Number(v);
+        if (Number.isFinite(n)) return n;
+      }
+      return undefined;
+    };
+
+    if (tb && typeof tb === "object") {
+      const last24 = asNumber(tb.last24Hours ?? tb.last_24_hours ?? tb.last24 ?? tb.last_24h ?? tb.last_24) ?? asNumber(tb["24h"]) ?? undefined;
+      const last7 = asNumber(tb.last7Days ?? tb.last_7_days ?? tb.last7 ?? tb.last_7d ?? tb.last_7) ?? undefined;
+      const last30 = asNumber(tb.last30Days ?? tb.last_30_days ?? tb.last30 ?? tb.last_30d ?? tb.last_30) ?? undefined;
+
+      if (last24 !== undefined || last7 !== undefined || last30 !== undefined) {
+        lines.push("");
+        lines.push(`**By time**`);
+        if (last24 !== undefined) lines.push(`- Last 24 hours: ${last24.toLocaleString()}`);
+        if (last7 !== undefined) lines.push(`- Last 7 days: ${last7.toLocaleString()}`);
+        if (last30 !== undefined) lines.push(`- Last 30 days: ${last30.toLocaleString()}`);
+      }
+    }
+
+    return lines.join("\n");
   }
 }

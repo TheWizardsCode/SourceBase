@@ -708,7 +708,7 @@ export async function runSummaryCommand(
  */
 export async function runStatsCommand(
   options: RunnerOptions = {}
-): Promise<StatsResult> {
+): Promise<any> {
   const { stdoutIterator, exitPromise } = runCliSubprocess(
     "stats",
     ["--json"],
@@ -736,40 +736,54 @@ export async function runStatsCommand(
   }
 
   try {
-    const stats = JSON.parse(jsonOutput) as StatsResult;
-
-    // Validate that the parsed object contains the expected numeric fields.
-    // Accept numeric strings by coercing, but treat missing or non-numeric
-    // values as a parse error so higher-level handlers can show the raw
-    // CLI output to operators for diagnosis.
-    const requiredFields: Array<keyof StatsResult> = [
-      "totalLinks",
-      "processedCount",
-      "pendingCount",
-      "failedCount",
-    ];
-
-    for (const f of requiredFields) {
-      const val = (stats as any)[f];
-      if (typeof val === "number" && Number.isFinite(val)) continue;
-      // try to coerce numeric strings
-      if (typeof val === "string") {
-        const n = Number(val);
-        if (Number.isFinite(n)) {
-          (stats as any)[f] = n;
-          continue;
+    // Helper: try parsing JSON from a candidate string. This is liberal
+    // because some CLI versions may emit the JSON on stderr or include
+    // additional logging around the JSON. We try the full string first,
+    // then attempt to extract a JSON object/array by finding matching
+    // braces/brackets.
+    const tryParseJson = (input: string): any | undefined => {
+      if (!input) return undefined;
+      const trimmed = input.trim();
+      if (!trimmed) return undefined;
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        // Try to find a JSON object substring
+        const firstBrace = trimmed.indexOf("{");
+        const lastBrace = trimmed.lastIndexOf("}");
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const candidate = trimmed.slice(firstBrace, lastBrace + 1);
+          try {
+            return JSON.parse(candidate);
+          } catch {
+            // continue
+          }
         }
+
+        // Try JSON array
+        const firstBracket = trimmed.indexOf("[");
+        const lastBracket = trimmed.lastIndexOf("]");
+        if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+          const candidate = trimmed.slice(firstBracket, lastBracket + 1);
+          try {
+            return JSON.parse(candidate);
+          } catch {
+            // continue
+          }
+        }
+
+        return undefined;
       }
+    };
 
-      const raw = stdoutLines.join("\n");
-      throw new StatsParseError(
-        `Stats JSON missing required numeric field: ${String(f)}`,
-        exitCode,
-        `${stderr}\n${raw}`
-      );
-    }
+    // Prefer stdout, but fall back to parsing stderr if the CLI wrote JSON there.
+    const parsedFromStdout = tryParseJson(jsonOutput);
+    if (parsedFromStdout !== undefined) return parsedFromStdout;
 
-    return stats;
+    const parsedFromStderr = tryParseJson(stderr);
+    if (parsedFromStderr !== undefined) return parsedFromStderr;
+
+    // Nothing parseable
   } catch (parseErr) {
     // If parsing fails, throw a distinct error so callers (the Discord
     // handlers) can provide a more helpful message to users rather than

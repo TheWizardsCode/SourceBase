@@ -32,7 +32,36 @@ export class StatsCommandHandler implements SlashCommandHandler {
         authorId: command.user?.id,
       });
 
-      await command.editReply(this.formatStatsMessage(stats));
+      // The CLI may return different JSON shapes across versions. Handle
+      // both the legacy shape (totalContents/withEmbeddings/...) and the
+      // newer structured StatsResult shape. Fall back to a best-effort
+      // formatting when fields don't match expectations.
+      if (stats && typeof stats === "object") {
+        // New shape expected by the bot
+        if (
+          typeof (stats as any).totalLinks === "number" ||
+          typeof (stats as any).processedCount === "number"
+        ) {
+          await command.editReply(this.formatStatsMessage(stats as StatsResult));
+        } else if (typeof (stats as any).totalContents === "number") {
+          // Legacy/OpenBrain older schema - map fields
+          const mapped: StatsResult = {
+            totalLinks: (stats as any).totalContents,
+            processedCount: (stats as any).withEmbeddings ?? 0,
+            pendingCount: ((stats as any).totalContents || 0) - ((stats as any).withEmbeddings || 0),
+            failedCount: 0,
+          };
+          await command.editReply(this.formatStatsMessage(mapped));
+        } else {
+          // Unknown shape: present raw JSON in a readable form
+          const pretty = JSON.stringify(stats, null, 2);
+          const header = "📊 OpenBrain statistics (raw output)";
+          // Use a fenced code block for readability
+          await command.editReply(`${header}\n\n\`\`\`json\n${pretty}\n\`\`\``);
+        }
+      } else {
+        await command.editReply(this.errorMessage);
+      }
     } catch (err) {
       // Always log the error server-side for diagnostics
       try {

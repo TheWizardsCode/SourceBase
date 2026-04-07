@@ -1,17 +1,26 @@
-import { Client, Intents, TextChannel, ThreadChannel, MessageEmbed, type Message, type Interaction, type ButtonInteraction, type CommandInteraction } from "discord.js";
+import { ThreadChannel, type Message, type Interaction, type ButtonInteraction, type CommandInteraction } from "discord.js";
 import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
 import { buildCliErrorReport } from "./discord/utils.js";
 import { isLikelyContentQuery } from "./query/detector.js";
+import { formatProgressMessage } from "./formatters/progress.js";
+import { postCliErrorReport } from "./discord/cli-error-report.js";
+import { CrawlCommandHandler } from "./handlers/CrawlCommandHandler.js";
+import { StatsCommandHandler } from "./handlers/StatsCommandHandler.js";
+import { startBot } from "./lifecycle/startup.js";
+import { createShutdownController } from "./lifecycle/shutdown.js";
+import {
+  formatMissingCrawlSeedMessage,
+  formatQueueFailureMessage,
+  formatQueuedUrlMessage,
+} from "./presenters/queue.js";
 import {
   runAddCommand,
-  runQueueCommand,
   runSummaryCommand,
   runCliCommand,
   isCliAvailable,
   CliRunnerError,
-  type AddProgressEvent,
   type AddResult,
 } from "./bot/cli-runner.js";
 import { pathToFileURL } from "url";
@@ -21,70 +30,11 @@ import { pathToFileURL } from "url";
 // ============================================================================
 
 const logger = new Logger(config.LOG_LEVEL as any);
+const crawlCommandHandler = new CrawlCommandHandler();
+const statsCommandHandler = new StatsCommandHandler();
 
-// ============================================================================
-// Progress Message Formatting
-// ============================================================================
-
-/**
- * Format a CLI progress event into a user-friendly Discord message
- */
-export function formatProgressMessage(event: AddProgressEvent): string {
-  // Normalize phase: avoid printing literal 'undefined' and handle
-  // events that do not include a phase field more helpfully.
-  const phase = typeof event.phase === "string" && event.phase.trim() !== "" ? event.phase : undefined;
-
-  if (!phase) {
-    // If the CLI provided an explanatory message, surface it as an error-like
-    // message so users and maintainers see something actionable in the thread.
-    if (event.message) {
-      const m = String(event.message).trim();
-      // Keep output reasonably sized for Discord
-      const truncated = m.length > 1500 ? `${m.slice(0, 1500)}…` : m;
-      // Include title or url context when available
-      if (event.title) return `❌ ${truncated} (${event.title})`;
-      if (event.url) return `❌ ${truncated} (<${event.url}>)`;
-      return `❌ ${truncated}`;
-    }
-
-    // No explicit message - include any small set of identifying fields so
-    // maintainers have context instead of seeing 'undefined'.
-    const parts: string[] = [];
-    if (event.id !== undefined) parts.push(`id:${event.id}`);
-    if (event.title) parts.push(`title:${event.title}`);
-    if (event.url) parts.push(`url:${event.url}`);
-    if (event.timestamp) parts.push(`ts:${event.timestamp}`);
-
-    if (parts.length > 0) {
-      return `⏳ Processing: unknown (${parts.join(", ")})`;
-    }
-
-    return `⏳ Processing: unknown event`;
-  }
-
-  switch (phase) {
-    case "downloading":
-      return "⏳ Downloading content...";
-    case "extracting":
-      return "📝 Extracting text content...";
-    case "embedding":
-      return "🧠 Generating embeddings...";
-    case "completed":
-      return `✅ Added to OpenBrain: ${event.title || "URL processed"}`;
-    case "failed":
-      return `❌ Failed: ${event.message || "Unknown error"}`;
-    default:
-      // For unknown but present phases, include any short message text
-      // the CLI might have provided to give more context.
-      const base = `⏳ Processing: ${phase}`;
-      if (event.message) {
-        const m = String(event.message).trim();
-        const truncated = m.length > 1200 ? `${m.slice(0, 1200)}…` : m;
-        return `${base}\n\n${truncated}`;
-      }
-      return base;
-  }
-}
+export { formatProgressMessage };
+export { postCliErrorReport };
 
 /**
  * Format thread name for URL processing
@@ -470,23 +420,6 @@ function extractUrls(content: string): string[] {
   const matches = content.match(urlRegex) || [];
   return [...new Set(matches)]; // Remove duplicates
 }
-
-/**
- * Check if message contains a crawl command
- */
-function isCrawlCommand(content: string): boolean {
-  return /^\s*crawl\s+/i.test(content);
-}
-
-/**
- * Extract seed URL from crawl command
- */
-function extractCrawlSeedUrl(content: string): string | null {
-  const match = content.match(/^\s*crawl\s+(https?:\/\/[^\s]+)/i);
-  return match ? match[1] : null;
-}
-
-
 
 /**
  * Process a URL with threaded progress updates
@@ -1061,54 +994,6 @@ async function suppressEmbedsIfPermitted(message: Message): Promise<boolean> {
 const DISCORD_CONTENT_LIMIT = 1900;
 const MARKDOWN_WRAP_WIDTH = 80;
 
-/**
- * Safely post a potentially large CLI diagnostic report to a Discord target.
- * If the report is within the content limit, post as a normal message.
- * If it exceeds the limit, post a short explanatory message and attach
- * the full report as a file to avoid Discord's message length restriction.
- */
-export async function postCliErrorReport(target: any, report: string, shortIntro?: string): Promise<void> {
-  try {
-    if (!report) return;
-
-    if (report.length <= DISCORD_CONTENT_LIMIT) {
-      if (typeof target.send === "function") {
-        await target.send(report);
-        return;
-      }
-      if (typeof target.reply === "function") {
-        await target.reply(report);
-        return;
-      }
-      return;
-    }
-
-    // Report too large for a single Discord message - send as attachment.
-    const intro = shortIntro || "Detailed CLI diagnostic attached.";
-    const content = `${intro}\n\n(Full report attached as cli-error-report.txt)`;
-    const file = { attachment: Buffer.from(report, "utf8"), name: "cli-error-report.txt" };
-
-    if (typeof target.send === "function") {
-      await target.send({ content, files: [file] } as any);
-      return;
-    }
-    if (typeof target.reply === "function") {
-      await target.reply({ content, files: [file] } as any);
-      return;
-    }
-  } catch (err) {
-    logger.warn("Failed to post CLI error report", { error: err instanceof Error ? err.message : String(err) });
-    // Best-effort fallback: try to send a truncated inline excerpt
-    try {
-      const truncated = report.slice(0, Math.max(0, DISCORD_CONTENT_LIMIT - 50)) + "…";
-      if (typeof target.send === "function") await target.send(truncated);
-      else if (typeof target.reply === "function") await target.reply(truncated);
-    } catch {
-      // ignore
-    }
-  }
-}
-
 function wrapLineAtNearestSpace(line: string, width: number): string[] {
   if (line.length <= width || width <= 0) {
     return [line];
@@ -1566,8 +1451,7 @@ const bot = new DiscordBot({
     const commandName = cmd.commandName;
 
     // Handle simple stats command
-    if (commandName === "stats") {
-      await cmd.reply("Stats functionality temporarily unavailable - CLI has been extracted to openBrain repository.");
+    if (await statsCommandHandler.handleCommand(cmd)) {
       return;
     }
 
@@ -2107,12 +1991,13 @@ const bot = new DiscordBot({
     }
     
     // Handle crawl commands
-    if (isCrawlCommand(message.content)) {
+    const crawl = crawlCommandHandler.parse(message.content);
+    if (crawl.isCrawlCommand) {
       logger.info("Crawl command detected", { messageId: message.id });
 
-      const seed = extractCrawlSeedUrl(message.content);
+      const seed = crawl.seedUrl;
       if (!seed) {
-        await message.reply("Please pass a seed URL to crawl, for example: `crawl https://example.com`.");
+        await message.reply(formatMissingCrawlSeedMessage());
         return;
       }
 
@@ -2126,11 +2011,7 @@ const bot = new DiscordBot({
       
       // Try to queue via CLI runner
       try {
-        const queueResult = await runQueueCommand(seed, {
-          channelId: message.channelId,
-          messageId: message.id,
-          authorId: message.author.id,
-        });
+        const queueResult = await crawlCommandHandler.queueSeed(message, seed);
         
         if (queueResult.success) {
           // Remove processing reaction and add success reaction
@@ -2138,7 +2019,7 @@ const bot = new DiscordBot({
           await addReaction(message, SUCCESS_REACTION);
           
           // Wrap in code ticks to avoid Discord creating an embed in the reply
-          await message.reply(`Queued URL for crawling: \`${seed}\``);
+          await message.reply(formatQueuedUrlMessage(seed));
         } else {
           // Remove processing reaction and add failure reaction
           await removeReaction(message, PROCESSING_REACTION);
@@ -2146,7 +2027,7 @@ const bot = new DiscordBot({
           
           // Wrap the URL in angle brackets to prevent Discord creating embeds,
           // and leave a blank line before the echoed error message.
-          await message.reply(`Failed to queue URL\n\n${queueResult.error || CLI_UNAVAILABLE_MESSAGE}`);
+          await message.reply(formatQueueFailureMessage(queueResult.error, CLI_UNAVAILABLE_MESSAGE));
         }
       } catch (error) {
         // Remove processing reaction and add failure reaction
@@ -2218,45 +2099,5 @@ const bot = new DiscordBot({
 // Startup and Shutdown
 // ============================================================================
 
-  async function startBot(): Promise<void> {
-  try {
-    await bot.start();
-    logger.info("Bot started successfully");
-  } catch (error) {
-    logger.error("Bot startup failed", {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    process.exitCode = 1;
-  }
-}
-
-// Track shutdown state
-let isShuttingDown = false;
-
-// Graceful shutdown cleanup
-async function gracefulShutdown(signal: string): Promise<void> {
-  if (isShuttingDown) {
-    logger.info("Shutdown already in progress, forcing exit");
-    process.exit(1);
-  }
-  
-  isShuttingDown = true;
-  logger.info(`Received ${signal}, starting graceful shutdown...`);
-  
-  try {
-    logger.info("Graceful shutdown complete");
-    process.exit(0);
-  } catch (err) {
-    logger.error("Error during graceful shutdown", {
-      error: err instanceof Error ? err.message : String(err)
-    });
-    process.exit(1);
-  }
-}
-
-// Register signal handlers
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-
-// Start the bot
-startBot();
+createShutdownController(logger);
+void startBot(() => bot.start(), logger);

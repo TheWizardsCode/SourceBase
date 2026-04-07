@@ -284,6 +284,51 @@ describe("index message handler integration", () => {
     });
   });
 
+  it("queues crawl command URL with existing success behavior", async () => {
+    const runQueueCommandMock = vi.fn(async (url: string) => ({
+      success: true,
+      url,
+      id: 99,
+    }));
+
+    const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
+      await vi.doMock("../src/bot/cli-runner.js", () => {
+        class MockCliRunnerError extends Error {
+          exitCode: number;
+          stderr: string;
+
+          constructor(message: string, exitCode = -1, stderr = "") {
+            super(message);
+            this.name = "CliRunnerError";
+            this.exitCode = exitCode;
+            this.stderr = stderr;
+          }
+        }
+
+        return {
+          runAddCommand: vi.fn(),
+          runQueueCommand: runQueueCommandMock,
+          runSummaryCommand: vi.fn(),
+          runCliCommand: vi.fn(),
+          isCliAvailable: vi.fn(async () => true),
+          CliRunnerError: MockCliRunnerError,
+        };
+      });
+    });
+
+    const { message, replies } = createFakeMessage("crawl https://crawl.example/start");
+    await onMonitoredMessage(message);
+
+    expect(runQueueCommandMock).toHaveBeenCalledWith("https://crawl.example/start", {
+      channelId: "channel-1",
+      messageId: "message-1",
+      authorId: "author-1",
+    });
+    expect(message.react).toHaveBeenCalledWith("👀");
+    expect(message.react).toHaveBeenCalledWith("✅");
+    expect(replies).toContain("Queued URL for crawling: `https://crawl.example/start`");
+  });
+
   it("creates a thread and posts progress updates with backtick wrapping", async () => {
     const runAddCommandMock = vi.fn((url: string, _options?: RunnerOptions) =>
       createAddGenerator(

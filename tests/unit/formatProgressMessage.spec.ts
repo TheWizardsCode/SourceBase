@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatProgressMessage } from "../../src/index.js";
+import { formatProgressMessage } from "../../src/formatters/progress.js";
 
 describe("formatProgressMessage", () => {
   it("handles known phases", () => {

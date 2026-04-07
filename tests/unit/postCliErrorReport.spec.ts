@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { postCliErrorReport } from "../../src/index.js";
+import { postCliErrorReport } from "../../src/discord/cli-error-report.js";
 
 function makeTarget() {
   const calls: any[] = [];

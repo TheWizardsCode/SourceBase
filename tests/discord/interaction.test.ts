@@ -95,6 +95,40 @@ describe("slash interaction handlers", () => {
     expect(body).toContain("[Beta](http://b.example)");
   });
 
+  it("routes /stats through StatsCommandHandler", async () => {
+    const handler = await loadInteractionHandler(async () => {
+      await vi.doMock("../../src/bot/cli-runner.js", () => {
+        return {
+          runCliCommand: vi.fn(async () => ({ exitCode: 0, stdout: [] })),
+          runAddCommand: vi.fn(),
+          runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(),
+          isCliAvailable: vi.fn(async () => true),
+          CliRunnerError: class MockCliRunnerError extends Error {},
+        };
+      });
+    });
+
+    const replies: string[] = [];
+    const fakeInteraction: any = {
+      isCommand: () => true,
+      commandName: "stats",
+      options: { getString: vi.fn(), getInteger: vi.fn() },
+      user: { id: "user-1" },
+      channelId: "chan-1",
+      deferReply: vi.fn(async () => {}),
+      editReply: vi.fn(async (_content: string) => {}),
+      fetchReply: vi.fn(async () => ({ id: "posted-1" })),
+      reply: vi.fn(async (content: string) => replies.push(content)),
+    };
+
+    await handler(fakeInteraction);
+
+    expect(replies).toContain(
+      "Stats functionality temporarily unavailable - CLI has been extracted to openBrain repository."
+    );
+  });
+
   it("falls back to line parsing when search output is not JSON", async () => {
     const handler = await loadInteractionHandler(async () => {
       await vi.doMock("../../src/bot/cli-runner.js", () => {

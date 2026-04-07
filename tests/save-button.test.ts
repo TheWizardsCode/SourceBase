@@ -42,7 +42,11 @@ describe("Save briefing button interaction", () => {
     // Mock runCliCommand to return stdout containing an id
     await vi.doMock("../src/bot/cli-runner.js", () => ({
       runCliCommand: vi.fn(async (_cmd: string, _args: string[]) => ({ stdout: [JSON.stringify({ id: 123 })], stderr: "", exitCode: 0 })),
+      runAddCommand: vi.fn(),
+      runQueueCommand: vi.fn(),
+      runSummaryCommand: vi.fn(),
       isCliAvailable: vi.fn(async () => true),
+      CliRunnerError: class MockCliRunnerError extends Error {},
     }));
 
     // Mock Discord client to capture the onInteraction handler
@@ -95,7 +99,11 @@ describe("Save briefing button interaction", () => {
 
     await vi.doMock("../src/bot/cli-runner.js", () => ({
       runCliCommand: runCliMock,
+      runAddCommand: vi.fn(),
+      runQueueCommand: vi.fn(),
+      runSummaryCommand: vi.fn(),
       isCliAvailable: vi.fn(async () => true),
+      CliRunnerError: class MockCliRunnerError extends Error {},
     }));
 
     // Mock Discord client to capture handler
@@ -167,7 +175,11 @@ describe("Save briefing button interaction", () => {
 
     await vi.doMock("../src/bot/cli-runner.js", () => ({
       runCliCommand: runCliMock,
+      runAddCommand: vi.fn(),
+      runQueueCommand: vi.fn(),
+      runSummaryCommand: vi.fn(),
       isCliAvailable: vi.fn(async () => true),
+      CliRunnerError: class MockCliRunnerError extends Error {},
     }));
 
     await vi.doMock("../src/discord/client.js", async () => {

@@ -1234,6 +1234,100 @@ function extractSummaryFromMarkdown(content: string, maxLen = 1500): string {
   return truncated;
 }
 
+/**
+ * Convert a parsed JSON briefing payload into human-readable Markdown.
+ * This is defensive: the CLI may return different JSON shapes (string,
+ * array of strings, object with known keys, or structured sections). Try
+ * to produce a readable markdown representation rather than dumping raw
+ * JSON to Discord.
+ */
+function renderBriefingFromJson(jsonOut: any): string {
+  if (typeof jsonOut === "string") return jsonOut;
+
+  if (Array.isArray(jsonOut)) {
+    // If array of plain strings, join with paragraphs.
+    if (jsonOut.every((el) => typeof el === "string")) {
+      return jsonOut.join("\n\n");
+    }
+
+    // Map array entries to readable blocks
+    const parts: string[] = jsonOut
+      .map((el) => {
+        if (!el && el !== 0) return "";
+        if (typeof el === "string") return el;
+        if (typeof el === "object") {
+          const title = el.title || el.name || el.heading;
+          const content = el.briefing || el.summary || el.text || el.body || el.markdown || el.md || el.content;
+          if (title && typeof content === "string") {
+            return `## ${String(title).trim()}\n\n${content.trim()}`;
+          }
+          // Fallback to converting object
+          return renderBriefingFromJson(el);
+        }
+        return String(el);
+      })
+      .filter(Boolean);
+
+    if (parts.length > 0) return parts.join("\n\n");
+    return JSON.stringify(jsonOut, null, 2);
+  }
+
+  if (jsonOut && typeof jsonOut === "object") {
+    // Prefer well-known single-field values
+    const preferred = ["briefing", "markdown", "md", "summary", "text", "body", "content"];
+    for (const k of preferred) {
+      if (k in jsonOut && typeof (jsonOut as any)[k] === "string" && (jsonOut as any)[k].trim()) {
+        return (jsonOut as any)[k];
+      }
+    }
+
+    // Handle array of sections
+    if (Array.isArray((jsonOut as any).sections)) {
+      const parts = (jsonOut as any).sections
+        .map((s: any) => {
+          if (!s && s !== 0) return "";
+          if (typeof s === "string") return s;
+          if (typeof s === "object") {
+            const title = s.title || s.heading || s.name;
+            const content = s.content || s.briefing || s.summary || s.text || s.body || s.markdown || s.md;
+            if (title) return `## ${String(title).trim()}\n\n${renderBriefingFromJson(content || s)}`;
+            return renderBriefingFromJson(s);
+          }
+          return String(s);
+        })
+        .filter(Boolean);
+
+      if (parts.length > 0) return parts.join("\n\n");
+    }
+
+    // Generic object -> render keys as headings with their stringified values
+    const keys = Object.keys(jsonOut);
+    if (keys.length > 0) {
+      const parts = keys
+        .map((k) => {
+          const v = (jsonOut as any)[k];
+          if (v === undefined || v === null) return "";
+          let content: string;
+          if (typeof v === "string") content = v;
+          else if (Array.isArray(v)) content = v.map((el) => (typeof el === "string" ? el : JSON.stringify(el))).join("\n\n");
+          else if (typeof v === "object") content = renderBriefingFromJson(v);
+          else content = String(v);
+          return `## ${k}\n\n${content}`;
+        })
+        .filter(Boolean);
+
+      if (parts.length > 0) return parts.join("\n\n");
+    }
+  }
+
+  // Fallback: pretty JSON
+  try {
+    return JSON.stringify(jsonOut, null, 2);
+  } catch {
+    return String(jsonOut);
+  }
+}
+
 async function editReplyWithPossibleAttachment(
   interaction: CommandInteraction,
   headerLine: string,
@@ -1858,12 +1952,9 @@ const bot = new DiscordBot({
 
         try {
           const jsonOut = JSON.parse(stdoutText);
-          if (typeof jsonOut === "string") briefingText = jsonOut;
-          else if (Array.isArray(jsonOut)) {
-            briefingText = jsonOut.filter((x) => typeof x === "string").join("\n\n") || stdoutText;
-          } else if (jsonOut && typeof jsonOut === "object") {
-            briefingText = jsonOut.briefing || jsonOut.summary || jsonOut.text || jsonOut.body || JSON.stringify(jsonOut, null, 2);
-          }
+          // Render JSON-first output into human-readable markdown rather than
+          // posting raw JSON to Discord.
+          briefingText = renderBriefingFromJson(jsonOut);
         } catch {
           // keep raw text
         }

@@ -204,4 +204,33 @@ describe("Save briefing button interaction", () => {
 
     expect(runCliMock).toHaveBeenCalledTimes(2);
   });
+
+  it("returns a helpful error when no briefing content is available", async () => {
+    // No attachments and no message content -> handler should return an explanatory error
+    await vi.doMock("../src/discord/client.js", async () => {
+      class MockDiscordBot {
+        constructor(options: any) {
+          (global as any).__ON_INTERACTION_CAPTURE__ = options.onInteraction;
+        }
+        async start(): Promise<void> {
+          return;
+        }
+      }
+
+      return { DiscordBot: MockDiscordBot };
+    });
+
+    // Load the bot module (this will set __ON_INTERACTION_CAPTURE__)
+    await import("../src/index.js");
+
+    const { interaction, edits } = makeButtonInteraction({ message: { id: "reply-empty", content: "", attachments: { size: 0 } } });
+
+    const captured = (global as any).__ON_INTERACTION_CAPTURE__ as any;
+    if (!captured) throw new Error("Failed to capture onInteraction handler");
+    await captured(interaction);
+
+    expect(edits.length).toBeGreaterThan(0);
+    const last = edits[edits.length - 1];
+    expect(String(last.content)).toContain("Could not extract briefing text");
+  });
 });

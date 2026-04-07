@@ -266,6 +266,14 @@ export class CliRunnerError extends Error {
   }
 }
 
+/** Error thrown when stats JSON output cannot be parsed */
+export class StatsParseError extends CliRunnerError {
+  constructor(message: string, exitCode: number, stderr: string) {
+    super(message, exitCode, stderr);
+    this.name = "StatsParseError";
+  }
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -703,14 +711,17 @@ export async function runStatsCommand(
 ): Promise<StatsResult> {
   const { stdoutIterator, exitPromise } = runCliSubprocess(
     "stats",
-    ["--format", "json"],
+    ["--json"],
     options
   );
 
   let jsonOutput = "";
+  const stdoutLines: string[] = [];
 
-  // Collect stdout
+  // Collect stdout lines (preserve them in case parsing fails so we can
+  // include the raw output in errors or fallbacks)
   for await (const line of stdoutIterator) {
+    stdoutLines.push(line);
     jsonOutput += line;
   }
 
@@ -726,12 +737,48 @@ export async function runStatsCommand(
 
   try {
     const stats = JSON.parse(jsonOutput) as StatsResult;
+
+    // Validate that the parsed object contains the expected numeric fields.
+    // Accept numeric strings by coercing, but treat missing or non-numeric
+    // values as a parse error so higher-level handlers can show the raw
+    // CLI output to operators for diagnosis.
+    const requiredFields: Array<keyof StatsResult> = [
+      "totalLinks",
+      "processedCount",
+      "pendingCount",
+      "failedCount",
+    ];
+
+    for (const f of requiredFields) {
+      const val = (stats as any)[f];
+      if (typeof val === "number" && Number.isFinite(val)) continue;
+      // try to coerce numeric strings
+      if (typeof val === "string") {
+        const n = Number(val);
+        if (Number.isFinite(n)) {
+          (stats as any)[f] = n;
+          continue;
+        }
+      }
+
+      const raw = stdoutLines.join("\n");
+      throw new StatsParseError(
+        `Stats JSON missing required numeric field: ${String(f)}`,
+        exitCode,
+        `${stderr}\n${raw}`
+      );
+    }
+
     return stats;
-  } catch {
-    throw new CliRunnerError(
+  } catch (parseErr) {
+    // If parsing fails, throw a distinct error so callers (the Discord
+    // handlers) can provide a more helpful message to users rather than
+    // assuming the CLI binary itself is missing/unavailable.
+    const raw = stdoutLines.join("\n");
+    throw new StatsParseError(
       "Failed to parse stats JSON output",
       exitCode,
-      stderr
+      `${stderr}\n${raw}`
     );
   }
 }

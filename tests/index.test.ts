@@ -1,17 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddProgressEvent, AddResult, RunnerOptions } from "../src/bot/cli-runner.js";
 
-function createAddGenerator(
-  events: AddProgressEvent[],
-  result: AddResult
-): AsyncGenerator<AddProgressEvent, AddResult, unknown> {
-  return (async function* () {
-    for (const event of events) {
-      yield event;
-    }
-    return result;
-  })();
-}
+// Import helper that creates an async-generator for add command mocks.
+// The helper is a plain JS module; TypeScript in the test env may warn about
+// missing types, but that's acceptable for tests.
+// Import helper that creates an async-generator for add command mocks.
+// Type declarations are provided in tests/helpers/createAddGenerator.d.ts.
+import { createAddGenerator } from "./helpers/createAddGenerator.js";
 
 function createFakeMessage(
   content: string,
@@ -105,7 +100,8 @@ describe("index message handler integration", () => {
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+    await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -119,6 +115,7 @@ describe("index message handler integration", () => {
         }
 
         return {
+          ...actual,
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(async (url: string) => ({
@@ -155,7 +152,8 @@ describe("index message handler integration", () => {
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+    await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -169,6 +167,7 @@ describe("index message handler integration", () => {
         }
 
         return {
+          ...actual,
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(async (url: string) => ({
@@ -209,7 +208,8 @@ describe("index message handler integration", () => {
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+    await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -223,6 +223,7 @@ describe("index message handler integration", () => {
         }
 
         return {
+          ...actual,
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(async (url: string) => ({
@@ -260,7 +261,8 @@ describe("index message handler integration", () => {
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+      await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -274,6 +276,7 @@ describe("index message handler integration", () => {
         }
 
         return {
+          ...actual,
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(async (url: string) => ({
@@ -316,7 +319,8 @@ describe("index message handler integration", () => {
     }));
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+      await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -330,7 +334,9 @@ describe("index message handler integration", () => {
         }
 
         return {
-          runAddCommand: vi.fn(),
+          ...actual,
+          // Safe async-generator stub for runAddCommand to preserve module shape
+          runAddCommand: vi.fn(() => (async function* () { return { success: false, error: "", url: "", id: undefined, stdout: [] }; })()),
           runQueueCommand: runQueueCommandMock,
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -375,7 +381,8 @@ describe("index message handler integration", () => {
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+      await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -389,6 +396,7 @@ describe("index message handler integration", () => {
         }
 
         return {
+          ...actual,
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(async (url: string) => ({
@@ -496,7 +504,8 @@ describe("index message handler integration", () => {
     }));
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+      await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -510,6 +519,7 @@ describe("index message handler integration", () => {
         }
 
         return {
+          ...actual,
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: runSummaryCommandMock,
@@ -568,7 +578,8 @@ describe("index message handler integration", () => {
     }));
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+      await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -582,6 +593,7 @@ describe("index message handler integration", () => {
         }
 
         return {
+          ...actual,
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: runSummaryCommandMock,
@@ -630,7 +642,8 @@ describe("index message handler integration", () => {
     }));
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
-      await vi.doMock("../src/bot/cli-runner.js", () => {
+      await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         class MockCliRunnerError extends Error {
           exitCode: number;
           stderr: string;
@@ -644,6 +657,7 @@ describe("index message handler integration", () => {
         }
 
         return {
+          ...actual,
           runAddCommand: runAddCommandMock,
           runQueueCommand: vi.fn(),
           runSummaryCommand: runSummaryCommandMock,

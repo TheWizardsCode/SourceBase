@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// Import helper that creates an async-generator for add command mocks.
+// We provide a .d.ts in tests/helpers to satisfy TypeScript in the test env.
+import { createAddGenerator } from "./helpers/createAddGenerator.js";
 import { setTimeout as wait } from "timers/promises";
 
 // Helper to create a mocked interaction object for button clicks
@@ -40,20 +43,26 @@ describe("Save briefing button interaction", () => {
     global.fetch = vi.fn(async () => ({ ok: true, text: async () => "# Summary\n\nAttachment body" } as any));
 
     // Mock runCliCommand to return stdout containing an id
-    await vi.doMock("../src/bot/cli-runner.js", () => ({
-      runCliCommand: vi.fn(async (_cmd: string, _args: string[]) => ({ stdout: [JSON.stringify({ id: 123 })], stderr: "", exitCode: 0 })),
-      runAddCommand: vi.fn(),
-      runQueueCommand: vi.fn(),
-      runSummaryCommand: vi.fn(),
-      runStatsCommand: vi.fn(async () => ({
-        totalLinks: 0,
-        processedCount: 0,
-        pendingCount: 0,
-        failedCount: 0,
-      })),
-      isCliAvailable: vi.fn(async () => true),
-      CliRunnerError: class MockCliRunnerError extends Error {},
-    }));
+    await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+      const actual: any = await importOriginal();
+      return {
+        ...actual,
+        runCliCommand: vi.fn(async (_cmd: string, _args: string[]) => ({ stdout: [JSON.stringify({ id: 123 })], stderr: "", exitCode: 0 })),
+        // Provide a safe async-generator stub for runAddCommand so tests that
+        // import the module won't break if the generator is iterated.
+        runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+        runQueueCommand: vi.fn(),
+        runSummaryCommand: vi.fn(),
+        runStatsCommand: vi.fn(async () => ({
+          totalLinks: 0,
+          processedCount: 0,
+          pendingCount: 0,
+          failedCount: 0,
+        })),
+        isCliAvailable: vi.fn(async () => true),
+        CliRunnerError: class MockCliRunnerError extends Error {},
+      };
+    });
 
     // Mock Discord client to capture the onInteraction handler
     await vi.doMock("../src/discord/client.js", async () => {
@@ -103,20 +112,24 @@ describe("Save briefing button interaction", () => {
 
     const runCliMock = vi.fn(() => runCliPromise);
 
-    await vi.doMock("../src/bot/cli-runner.js", () => ({
-      runCliCommand: runCliMock,
-      runAddCommand: vi.fn(),
-      runQueueCommand: vi.fn(),
-      runSummaryCommand: vi.fn(),
-      runStatsCommand: vi.fn(async () => ({
-        totalLinks: 0,
-        processedCount: 0,
-        pendingCount: 0,
-        failedCount: 0,
-      })),
-      isCliAvailable: vi.fn(async () => true),
-      CliRunnerError: class MockCliRunnerError extends Error {},
-    }));
+    await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+      const actual: any = await importOriginal();
+      return {
+        ...actual,
+        runCliCommand: runCliMock,
+        runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+        runQueueCommand: vi.fn(),
+        runSummaryCommand: vi.fn(),
+        runStatsCommand: vi.fn(async () => ({
+          totalLinks: 0,
+          processedCount: 0,
+          pendingCount: 0,
+          failedCount: 0,
+        })),
+        isCliAvailable: vi.fn(async () => true),
+        CliRunnerError: class MockCliRunnerError extends Error {},
+      };
+    });
 
     // Mock Discord client to capture handler
     await vi.doMock("../src/discord/client.js", async () => {
@@ -185,20 +198,24 @@ describe("Save briefing button interaction", () => {
       return { stdout: [JSON.stringify({ id: 42 })], stderr: "", exitCode: 0 };
     });
 
-    await vi.doMock("../src/bot/cli-runner.js", () => ({
-      runCliCommand: runCliMock,
-      runAddCommand: vi.fn(),
-      runQueueCommand: vi.fn(),
-      runSummaryCommand: vi.fn(),
-      runStatsCommand: vi.fn(async () => ({
-        totalLinks: 0,
-        processedCount: 0,
-        pendingCount: 0,
-        failedCount: 0,
-      })),
-      isCliAvailable: vi.fn(async () => true),
-      CliRunnerError: class MockCliRunnerError extends Error {},
-    }));
+    await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+      const actual: any = await importOriginal();
+      return {
+        ...actual,
+        runCliCommand: runCliMock,
+        runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+        runQueueCommand: vi.fn(),
+        runSummaryCommand: vi.fn(),
+        runStatsCommand: vi.fn(async () => ({
+          totalLinks: 0,
+          processedCount: 0,
+          pendingCount: 0,
+          failedCount: 0,
+        })),
+        isCliAvailable: vi.fn(async () => true),
+        CliRunnerError: class MockCliRunnerError extends Error {},
+      };
+    });
 
     await vi.doMock("../src/discord/client.js", async () => {
       class MockDiscordBot {

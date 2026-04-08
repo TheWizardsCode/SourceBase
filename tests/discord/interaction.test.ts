@@ -275,6 +275,102 @@ describe("slash interaction handlers", () => {
     );
   });
 
+  it("parses JSON array recent output into id/title/modified lines", async () => {
+    const handler = await loadInteractionHandler(async () => {
+      await vi.doMock("../../src/bot/cli-runner.js", () => {
+        return {
+          runCliCommand: vi.fn(async (cmd: string) => {
+            if (cmd === "recent") {
+              return {
+                exitCode: 0,
+                stdout: [
+                  JSON.stringify([
+                    { id: 1, title: "Alpha", modified: "2026-04-07T12:00:00Z", summary: "One-liner alpha" },
+                    { id: 2, title: "Beta", modified: "2026-04-07T13:00:00Z", summary: "One-liner beta" },
+                  ]),
+                ],
+              };
+            }
+            return { exitCode: 0, stdout: [] };
+          }),
+          runAddCommand: vi.fn(),
+          runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
+          isCliAvailable: vi.fn(async () => true),
+          CliRunnerError: class MockCliRunnerError extends Error {},
+        };
+      });
+    });
+
+    const edits: string[] = [];
+    const fakeInteraction: any = {
+      isCommand: () => true,
+      commandName: "recent",
+      options: { getInteger: (_: string) => null },
+      user: { id: "user-1" },
+      channelId: "chan-1",
+      deferReply: vi.fn(async () => {}),
+      editReply: vi.fn(async (content: string) => edits.push(String(content))),
+      fetchReply: vi.fn(async () => ({ id: "posted-1" })),
+      reply: vi.fn(async () => {}),
+    };
+
+    await handler(fakeInteraction);
+
+    expect(edits.length).toBeGreaterThan(0);
+    const body = edits[0];
+    expect(body).toContain("Alpha");
+    expect(body).toContain("Beta");
+    expect(body).toContain("2026-04-07T12:00:00");
+  });
+
+  it("rejects out-of-range recent limit before calling CLI", async () => {
+    const runCliCommandMock = vi.fn(async () => ({ exitCode: 0, stdout: ["[]"] }));
+
+    const handler = await loadInteractionHandler(async () => {
+      await vi.doMock("../../src/bot/cli-runner.js", () => {
+        return {
+          runCliCommand: runCliCommandMock,
+          runAddCommand: vi.fn(),
+          runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({
+            totalLinks: 0,
+            processedCount: 0,
+            pendingCount: 0,
+            failedCount: 0,
+          })),
+          isCliAvailable: vi.fn(async () => true),
+          CliRunnerError: class MockCliRunnerError extends Error {},
+        };
+      });
+    });
+
+    const edits: string[] = [];
+    const fakeInteraction: any = {
+      isCommand: () => true,
+      commandName: "recent",
+      options: { getInteger: (_: string) => 999 },
+      user: { id: "user-1" },
+      channelId: "chan-1",
+      deferReply: vi.fn(async () => {}),
+      editReply: vi.fn(async (content: string) => edits.push(String(content))),
+      fetchReply: vi.fn(async () => ({ id: "posted-1" })),
+      reply: vi.fn(async () => {}),
+    };
+
+    await handler(fakeInteraction);
+
+    expect(runCliCommandMock).not.toHaveBeenCalled();
+    expect(edits).toContain("⚠️ Recent parameter `limit` must be between 1 and 100.");
+  });
+
   it("passes optional briefing k argument through to CLI when provided", async () => {
     const runCliCommandMock = vi.fn(async (cmd: string) => {
       if (cmd === "briefing") {

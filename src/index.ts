@@ -8,6 +8,7 @@ import { formatProgressMessage } from "./formatters/progress.js";
 import { postCliErrorReport } from "./discord/cli-error-report.js";
 import { CrawlCommandHandler } from "./handlers/CrawlCommandHandler.js";
 import { StatsCommandHandler } from "./handlers/StatsCommandHandler.js";
+import { RecentCommandHandler } from "./handlers/RecentCommandHandler.js";
 import { startBot } from "./lifecycle/startup.js";
 import { createShutdownController } from "./lifecycle/shutdown.js";
 import {
@@ -32,6 +33,7 @@ import { pathToFileURL } from "url";
 const logger = new Logger(config.LOG_LEVEL as any);
 const crawlCommandHandler = new CrawlCommandHandler();
 const statsCommandHandler = new StatsCommandHandler();
+const recentCommandHandler = new RecentCommandHandler();
 
 export { formatProgressMessage };
 export { postCliErrorReport };
@@ -1452,6 +1454,11 @@ const bot = new DiscordBot({
 
     // Handle simple stats command
     if (await statsCommandHandler.handleCommand(cmd)) {
+      return;
+    }
+
+    // Handle /recent
+    if (await recentCommandHandler.handleCommand(cmd)) {
       return;
     }
 

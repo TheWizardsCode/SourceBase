@@ -336,7 +336,7 @@ describe("index message handler integration", () => {
         return {
           ...actual,
           // Safe async-generator stub for runAddCommand to preserve module shape
-          runAddCommand: vi.fn(() => (async function* () { return { success: false, error: "", url: "", id: undefined, stdout: [] }; })()),
+          runAddCommand: vi.fn(() => createAddGenerator([], ({ success: false, error: "", url: "", id: undefined } as any))),
           runQueueCommand: runQueueCommandMock,
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({

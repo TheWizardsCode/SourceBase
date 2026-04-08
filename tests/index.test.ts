@@ -96,7 +96,7 @@ describe("index message handler integration", () => {
         success: true,
         url,
         title: "Single URL",
-      })
+      } as any)
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
@@ -148,7 +148,7 @@ describe("index message handler integration", () => {
         success: true,
         url,
         title: "Indexed",
-      })
+      } as any)
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
@@ -204,7 +204,7 @@ describe("index message handler integration", () => {
         success: true,
         url,
         title: "unused",
-      })
+      } as any)
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
@@ -257,7 +257,7 @@ describe("index message handler integration", () => {
         success: true,
         url,
         title: "Context Check",
-      })
+      } as any)
     );
 
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
@@ -372,11 +372,11 @@ describe("index message handler integration", () => {
           { phase: "downloading", url },
           { phase: "completed", url, title: "Useful Title" },
         ],
-        {
+        ({
           success: true,
           url,
           title: "Useful Title",
-        }
+        } as any)
       )
     );
 
@@ -487,13 +487,13 @@ describe("index message handler integration", () => {
             timestamp: "2026-04-02T15:00:00.000Z",
           },
         ],
-        {
+        ({
           success: true,
           url,
           title: "Useful Title",
           id: 55,
           timestamp: "2026-04-02T15:00:00.000Z",
-        }
+        } as any)
       )
     );
 
@@ -562,12 +562,12 @@ describe("index message handler integration", () => {
           { phase: "downloading", url },
           { phase: "completed", url, title: "Useful Title", id: 91 },
         ],
-        {
+        ({
           success: true,
           url,
           title: "Useful Title",
           id: 91,
-        }
+        } as any)
       )
     );
 
@@ -626,12 +626,12 @@ describe("index message handler integration", () => {
           { phase: "downloading", url },
           { phase: "completed", url, title: "Useful Title", id: 777 },
         ],
-        {
+        ({
           success: true,
           url,
           title: "Useful Title",
           id: 777,
-        }
+        } as any)
       )
     );
 

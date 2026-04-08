@@ -88,7 +88,7 @@ describe("ob add message handler failure modes", () => {
           ...actual,
           // Provide a default runAddCommand async-generator stub so modules
           // that expect a generator can call .next() safely.
-          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined } as any)),
           runCliCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
@@ -123,7 +123,7 @@ describe("ob add message handler failure modes", () => {
         class MockCliRunnerError extends Error {}
         return {
           ...actual,
-          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined } as any)),
           runCliCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
@@ -158,7 +158,7 @@ describe("ob add message handler failure modes", () => {
           ...actual,
           // Ensure runAddCommand is a generator returning a value to match
           // production expectations when iterating the generator.
-          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -200,7 +200,7 @@ describe("ob add message handler failure modes", () => {
         const actual: any = await importOriginal();
         return {
           ...actual,
-          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, url: "file:///tmp/fake-add.md", id: 111, title: "file.md", stdout: [] })),
+        runAddCommand: vi.fn(() => createAddGenerator([], ({ success: true, url: "file:///tmp/fake-add.md", id: 111, title: "file.md" } as any))),
           runCliCommand: vi.fn(async () => ({ stdout: [JSON.stringify({ id: 111 })], stderr: "", exitCode: 0 })),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
@@ -248,7 +248,7 @@ describe("ob add message handler failure modes", () => {
         const actual: any = await importOriginal();
         return {
           ...actual,
-          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined } as any)),
           runCliCommand: vi.fn(),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
@@ -279,7 +279,7 @@ describe("ob add message handler failure modes", () => {
         const actual: any = await importOriginal();
         return {
           ...actual,
-          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, url: "file:///tmp/fake-inline.txt", id: 222, title: "inline.txt", stdout: [] })),
+          runAddCommand: vi.fn(() => createAddGenerator([], ({ success: true, url: "file:///tmp/fake-inline.txt", id: 222, title: "inline.txt" } as any))),
           runCliCommand: vi.fn(async () => ({ stdout: [JSON.stringify({ id: 222 })], stderr: "", exitCode: 0 })),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),

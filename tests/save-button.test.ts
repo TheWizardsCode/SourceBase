@@ -50,7 +50,7 @@ describe("Save briefing button interaction", () => {
         runCliCommand: vi.fn(async (_cmd: string, _args: string[]) => ({ stdout: [JSON.stringify({ id: 123 })], stderr: "", exitCode: 0 })),
         // Provide a safe async-generator stub for runAddCommand so tests that
         // import the module won't break if the generator is iterated.
-        runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+        runAddCommand: vi.fn(() => createAddGenerator([], ({ success: false, error: "", url: "", id: undefined } as any))),
         runQueueCommand: vi.fn(),
         runSummaryCommand: vi.fn(),
         runStatsCommand: vi.fn(async () => ({
@@ -117,7 +117,7 @@ describe("Save briefing button interaction", () => {
       return {
         ...actual,
         runCliCommand: runCliMock,
-        runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+        runAddCommand: vi.fn(() => createAddGenerator([], ({ success: false, error: "", url: "", id: undefined } as any))),
         runQueueCommand: vi.fn(),
         runSummaryCommand: vi.fn(),
         runStatsCommand: vi.fn(async () => ({
@@ -203,7 +203,7 @@ describe("Save briefing button interaction", () => {
       return {
         ...actual,
         runCliCommand: runCliMock,
-        runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined, stdout: [] })),
+        runAddCommand: vi.fn(() => createAddGenerator([], ({ success: false, error: "", url: "", id: undefined } as any))),
         runQueueCommand: vi.fn(),
         runSummaryCommand: vi.fn(),
         runStatsCommand: vi.fn(async () => ({

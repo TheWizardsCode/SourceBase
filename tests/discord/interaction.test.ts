@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createAddGenerator } from "../helpers/createAddGenerator.js";
 
 async function loadInteractionHandler(setupAdditionalMocks?: () => Promise<void>) {
   let lastOpts: any = null;
@@ -69,9 +70,7 @@ describe("slash interaction handlers", () => {
           }),
           // provide a minimal async-generator shaped stub so consumers iterating it
           // always get a final return value and don't encounter undefined finalResult
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -121,9 +120,7 @@ describe("slash interaction handlers", () => {
         return {
           ...actual,
           runCliCommand: vi.fn(async () => ({ exitCode: 0, stdout: [] })),
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: runStatsCommandMock,
@@ -186,9 +183,7 @@ describe("slash interaction handlers", () => {
             }
             return { exitCode: 0, stdout: [] };
           }),
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -247,9 +242,7 @@ describe("slash interaction handlers", () => {
         return {
           ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -313,9 +306,7 @@ describe("slash interaction handlers", () => {
             }
             return { exitCode: 0, stdout: [] };
           }),
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -361,9 +352,7 @@ describe("slash interaction handlers", () => {
         return {
           ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -414,9 +403,7 @@ describe("slash interaction handlers", () => {
         return {
           ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -464,9 +451,7 @@ describe("slash interaction handlers", () => {
         return {
           ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -522,9 +507,7 @@ describe("slash interaction handlers", () => {
         return {
           ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: async function* () {
-            return { success: true, id: 1, url: "", stdout: [] } as any;
-          },
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({

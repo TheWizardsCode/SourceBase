@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createAddGenerator } from "../helpers/createAddGenerator.js";
 
 async function loadInteractionHandler(setupAdditionalMocks?: () => Promise<void>) {
   let lastOpts: any = null;
@@ -49,8 +50,10 @@ describe("slash interaction handlers", () => {
 
   it("parses JSON array search output into [title](url) lines", async () => {
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+    await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: vi.fn(async (cmd: string) => {
             if (cmd === "search") {
               return {
@@ -65,7 +68,9 @@ describe("slash interaction handlers", () => {
             }
             return { exitCode: 0, stdout: [] };
           }),
-          runAddCommand: vi.fn(),
+          // provide a minimal async-generator shaped stub so consumers iterating it
+          // always get a final return value and don't encounter undefined finalResult
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -110,10 +115,12 @@ describe("slash interaction handlers", () => {
     }));
 
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+    await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: vi.fn(async () => ({ exitCode: 0, stdout: [] })),
-          runAddCommand: vi.fn(),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: runStatsCommandMock,
@@ -149,19 +156,21 @@ describe("slash interaction handlers", () => {
       [
         "📊 OpenBrain statistics",
         "",
-        "Total links: 100",
-        "Processed: 80",
-        "Pending: 15",
-        "Failed: 5",
-        "Success rate: 80.0%",
+        "**Totals**",
+        "- Total links: 100",
+        "- Processed: 80 (80.0%)",
+        "- Pending: 15",
+        "- Failed: 5 (5.0%)",
       ].join("\n")
     );
   });
 
   it("falls back to line parsing when search output is not JSON", async () => {
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+    await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: vi.fn(async (cmd: string) => {
             if (cmd === "search") {
               return {
@@ -174,7 +183,7 @@ describe("slash interaction handlers", () => {
             }
             return { exitCode: 0, stdout: [] };
           }),
-          runAddCommand: vi.fn(),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -228,10 +237,12 @@ describe("slash interaction handlers", () => {
     });
 
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+    await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: vi.fn(),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -277,8 +288,10 @@ describe("slash interaction handlers", () => {
 
   it("parses JSON array recent output into id/title/modified lines", async () => {
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+    await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: vi.fn(async (cmd: string) => {
             if (cmd === "recent") {
               return {
@@ -293,7 +306,7 @@ describe("slash interaction handlers", () => {
             }
             return { exitCode: 0, stdout: [] };
           }),
-          runAddCommand: vi.fn(),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -334,10 +347,12 @@ describe("slash interaction handlers", () => {
     const runCliCommandMock = vi.fn(async () => ({ exitCode: 0, stdout: ["[]"] }));
 
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+    await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: vi.fn(),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -383,10 +398,12 @@ describe("slash interaction handlers", () => {
     });
 
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+      await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: vi.fn(),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -429,10 +446,12 @@ describe("slash interaction handlers", () => {
     const runCliCommandMock = vi.fn(async () => ({ exitCode: 0, stdout: ["unused"] }));
 
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+      await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: vi.fn(),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({
@@ -483,10 +502,12 @@ describe("slash interaction handlers", () => {
     });
 
     const handler = await loadInteractionHandler(async () => {
-      await vi.doMock("../../src/bot/cli-runner.js", () => {
+      await vi.doMock("../../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
         return {
+          ...actual,
           runCliCommand: runCliCommandMock,
-          runAddCommand: vi.fn(),
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: true, id: 1, url: "" } as any)),
           runQueueCommand: vi.fn(),
           runSummaryCommand: vi.fn(),
           runStatsCommand: vi.fn(async () => ({

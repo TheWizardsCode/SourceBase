@@ -36,11 +36,11 @@ describe("StatsCommandHandler", () => {
       [
         "📊 OpenBrain statistics",
         "",
-        "Total links: 100",
-        "Processed: 80",
-        "Pending: 15",
-        "Failed: 5",
-        "Success rate: 80.0%",
+        "**Totals**",
+        "- Total links: 100",
+        "- Processed: 80 (80.0%)",
+        "- Pending: 15",
+        "- Failed: 5 (5.0%)",
       ].join("\n")
     );
   });

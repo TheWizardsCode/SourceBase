@@ -16,6 +16,7 @@ import {
   formatQueueFailureMessage,
   formatQueuedUrlMessage,
 } from "./presenters/queue.js";
+import { ProgressPresenter } from "./presenters/progress.js";
 import {
   runAddCommand,
   runSummaryCommand,
@@ -470,18 +471,11 @@ async function processUrlWithProgress(
       authorId: message.author.id,
     });
     
-    let lastPhase: string | null = null;
-    // Once we see a terminal phase ('completed' or 'failed') we should
-    // suppress any subsequent progress updates emitted by the CLI to avoid
-    // confusing the user with post-completion informational objects.
-    let terminalPhaseSeen = false;
     let eventCount = 0;
     let finalResult: AddResult | undefined;
-    // Keep a reference to the last posted Discord message so we can
-    // append the created item link/ID to it when the CLI returns the ID.
-    // In real runtime this will be a discord.js Message; in tests the
-    // mocked send/reply helpers may return undefined which we handle.
-    let lastPostedMessage: any = null;
+
+    // ProgressPresenter manages status message state and lifecycle
+    const presenter = new ProgressPresenter(thread, message, logger);
     
     // Process progress events using manual iteration to capture return value
     logger.info("Waiting for CLI progress events...", { messageId: message.id, url });
@@ -511,94 +505,23 @@ async function processUrlWithProgress(
         eventCount,
       });
 
-      // If we've already observed a terminal phase, ignore any further
-      // progress events to avoid confusing follow-up messages (some CLI
-      // implementations emit informational objects after completion).
-      if (terminalPhaseSeen) {
-        logger.debug("Ignoring CLI progress event after terminal phase", {
-          messageId: message.id,
-          url,
-          eventCount,
-        });
-        continue;
-      }
-
-      // Only send update if phase changed (avoid spam)
-        if (event.phase !== lastPhase) {
-          lastPhase = event.phase;
-
-          const progressMsg = formatProgressMessage(event);
-
-        // Always ensure URLs shown to users are wrapped in backticks to avoid embeds.
-        // If event contains a url or title, prefer showing the title wrapped in ticks.
-        const safeProgressMsg = ((): string => {
-          try {
-            if (event.title) return progressMsg.replace(event.title, `\`${event.title}\``);
-            if (event.url) return progressMsg.replace(event.url, `\`${event.url}\``);
-            return progressMsg;
-          } catch {
-            return progressMsg;
-          }
-        })();
-
-          if (thread) {
-            try {
-              // Capture the returned message when possible so we can edit it
-              // later to append the created item link/ID.
-              const posted = await thread.send(safeProgressMsg);
-              lastPostedMessage = posted ?? lastPostedMessage;
-            } catch (error) {
-              logger.warn("Failed to send progress update to thread; falling back to channel reply", {
-                threadId: thread.id,
-                phase: event.phase,
-                error: error instanceof Error ? error.message : String(error),
-              });
-              // Fallback: reply in channel so user still receives updates
-              try {
-                const posted = await message.reply(safeProgressMsg);
-                lastPostedMessage = posted ?? lastPostedMessage;
-              } catch (err) {
-                logger.warn("Failed to send fallback progress reply to channel", {
-                  messageId: message.id,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              }
-            }
-          } else {
-            // No thread available -> send progress updates to channel (safe)
-            try {
-              const posted = await message.reply(safeProgressMsg);
-              lastPostedMessage = posted ?? lastPostedMessage;
-            } catch (err) {
-              logger.warn("Failed to send progress update to channel", {
-                messageId: message.id,
-                phase: event.phase,
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
-          }
-
-        // If this event indicates a terminal state, mark it so we ignore
-        // any subsequent non-actionable events.
-        try {
-          if (event.phase === "completed" || event.phase === "failed") {
-            terminalPhaseSeen = true;
-          }
-        } catch {
-          // ignore
-        }
-      }
+      await presenter.handleProgressEvent(event);
     }
+
+    // Retrieve presenter state for final result handling
+    const lastPhase = presenter.getLastPhase();
+    let lastPostedMessage: any = presenter.getLastPostedMessage();
+
     if (finalResult) {
       logger.info("CLI processing complete", {
         messageId: message.id,
         url,
-        success: finalResult?.success,
-        title: finalResult?.title,
-        error: finalResult?.error,
+        success: finalResult.success,
+        title: finalResult.title,
+        error: finalResult.error,
       });
 
-      if (finalResult?.success) {
+      if (finalResult.success) {
         await removeReaction(message, PROCESSING_REACTION);
         await addReaction(message, SUCCESS_REACTION);
 

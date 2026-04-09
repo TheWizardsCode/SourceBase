@@ -115,6 +115,22 @@ export class DiscordBot {
         ],
       });
 
+      // Register the recent command
+      await guild.commands.create({
+        name: "recent",
+        description: "List recently modified OpenBrain items",
+        options: [
+          {
+            name: "limit",
+            description: "Maximum number of recent items to return (1-100)",
+            type: 4, // INTEGER
+            required: false,
+            minValue: 1,
+            maxValue: 100,
+          },
+        ],
+      });
+
       this.options.logger.info("Slash commands registered successfully");
     } catch (error) {
       this.options.logger.error("Failed to register slash commands", {

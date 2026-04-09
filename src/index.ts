@@ -8,6 +8,7 @@ import { formatProgressMessage } from "./formatters/progress.js";
 import { postCliErrorReport } from "./discord/cli-error-report.js";
 import { CrawlCommandHandler } from "./handlers/CrawlCommandHandler.js";
 import { StatsCommandHandler } from "./handlers/StatsCommandHandler.js";
+import { RecentCommandHandler } from "./handlers/RecentCommandHandler.js";
 import { startBot } from "./lifecycle/startup.js";
 import { createShutdownController } from "./lifecycle/shutdown.js";
 import {
@@ -33,6 +34,7 @@ import { pathToFileURL } from "url";
 const logger = new Logger(config.LOG_LEVEL as any);
 const crawlCommandHandler = new CrawlCommandHandler();
 const statsCommandHandler = new StatsCommandHandler();
+const recentCommandHandler = new RecentCommandHandler();
 
 export { formatProgressMessage };
 export { postCliErrorReport };
@@ -227,11 +229,13 @@ async function generateSummaryWithRetry(url: string, context: {
       ...context,
       timeoutMs: context.timeoutMs,
     });
-    if (result.success && result.summary) {
+
+    // Defensive: some tests/mocks may return undefined or non-object values.
+    if (result && typeof result === "object" && result.success && result.summary) {
       return { success: true, summary: result.summary };
     }
 
-    lastError = result.error || "Summary command returned no output";
+    lastError = (result && typeof result === "object" && (result.error || "Summary command returned no output")) || "Summary command returned no output";
 
     if (attempt < maxAttempts) {
       const delayMs = retryBaseDelayMs * Math.pow(2, attempt - 1);
@@ -507,100 +511,80 @@ async function processUrlWithProgress(
     // Retrieve presenter state for final result handling
     const lastPhase = presenter.getLastPhase();
     let lastPostedMessage: any = presenter.getLastPostedMessage();
-    
-        if (finalResult) {
-          logger.info("CLI processing complete", { 
-            messageId: message.id, 
-            url, 
-            success: finalResult.success,
-            title: finalResult.title,
-            error: finalResult.error
-          });
-          
-          if (finalResult.success) {
-            // Remove processing reaction and add success reaction
-            await removeReaction(message, PROCESSING_REACTION);
-            await addReaction(message, SUCCESS_REACTION);
-            
-            // Ensure title or URL displayed is wrapped in backticks to avoid embeds
-            const displayName = finalResult.title ? `\`${finalResult.title}\`` : `\`${url}\``;
-            // If we already have an item id, prepare an item link for the
-            // immediate confirmation so users see the created item id/link
-            // as soon as possible.
-            let successMsg = `✅ Added: ${displayName}`;
-            const itemId = finalResult.id;
-            const itemLink = itemId !== undefined ? buildOpenBrainItemLink(itemId, finalResult.url || url) : undefined;
-            if (itemLink) {
-              // Use an angle-bracketed link to avoid Discord embeds
-              successMsg = `✅ Added: ${displayName} — OpenBrain item: <${itemLink}>`;
-            }
 
-            let summaryTargetThread: ThreadChannel | null = thread;
+    if (finalResult) {
+      logger.info("CLI processing complete", {
+        messageId: message.id,
+        url,
+        success: finalResult.success,
+        title: finalResult.title,
+        error: finalResult.error,
+      });
 
-            // If we already observed a 'completed' progress event earlier and
-            // posted it to the thread/channel, avoid posting a duplicate final
-            // success message. We detect this by checking the lastPhase value.
-            const alreadyCompleted = lastPhase === "completed";
+      if (finalResult.success) {
+        await removeReaction(message, PROCESSING_REACTION);
+        await addReaction(message, SUCCESS_REACTION);
 
-            if (!alreadyCompleted) {
-              if (thread) {
-                try {
-                  const posted = await thread.send(successMsg);
-                  // capture the final posted message when possible
-                  lastPostedMessage = posted ?? lastPostedMessage;
-                } catch (error) {
-                  logger.warn("Failed to send final success message to thread; falling back to channel reply", {
-                    threadId: thread.id,
-                    error: error instanceof Error ? error.message : String(error),
-                  });
-                  summaryTargetThread = null;
-                  // Fallback to channel reply
-                  try {
-                    const posted = await message.reply(successMsg);
-                    lastPostedMessage = posted ?? lastPostedMessage;
-                  } catch (err) {
-                    logger.warn("Failed to send fallback success reply to channel", {
-                      messageId: message.id,
-                      error: err instanceof Error ? err.message : String(err),
-                    });
-                  }
-                }
-              } else {
-                // Fallback to message reply if no thread
+        const displayName = finalResult.title ? `\`${finalResult.title}\`` : `\`${url}\``;
+        let successMsg = `✅ Added: ${displayName}`;
+        const itemId = finalResult?.id;
+        const itemLink = itemId !== undefined ? buildOpenBrainItemLink(itemId, finalResult?.url || url) : undefined;
+        if (itemLink) {
+          successMsg = `✅ Added: ${displayName} — OpenBrain item: <${itemLink}>`;
+        }
+
+        let summaryTargetThread: ThreadChannel | null = thread;
+        const alreadyCompleted = lastPhase === "completed";
+
+        if (!alreadyCompleted) {
+          if (thread) {
+            try {
+              const posted = await thread.send(successMsg);
+              lastPostedMessage = posted ?? lastPostedMessage;
+            } catch (error) {
+              logger.warn("Failed to send final success message to thread; falling back to channel reply", {
+                threadId: thread.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              summaryTargetThread = null;
+              try {
                 const posted = await message.reply(successMsg);
                 lastPostedMessage = posted ?? lastPostedMessage;
-              }
-            } else {
-              // We previously posted a 'completed' progress message. If the
-              // CLI also returned an item id, append it to the posted message
-              // so users see the created item id immediately. If editing the
-              // posted message is not possible, send a concise follow-up.
-              if (itemId !== undefined) {
-                try {
-                  const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
-                  if (lastPostedMessage && typeof lastPostedMessage.edit === "function") {
-                    // Try to augment the existing message
-                    const prevContent = typeof lastPostedMessage.content === "string" ? lastPostedMessage.content : successMsg;
-                    try {
-                      await lastPostedMessage.edit(prevContent + appended);
-                    } catch (err) {
-                      logger.warn("Failed to edit completed message with item id", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-                      // Fallback: post a short follow-up containing the item link
-                      if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
-                      else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
-                    }
-                  } else {
-                    // Cannot edit previous message – send a short follow-up
-                    if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
-                    else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
-                  }
-                } catch (err) {
-                  logger.warn("Failed to post item link follow-up", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-                }
-              } else {
-                logger.debug("Skipping duplicate final success message because completed event was already posted", { messageId: message.id, url });
+              } catch (err) {
+                logger.warn("Failed to send fallback success reply to channel", {
+                  messageId: message.id,
+                  error: err instanceof Error ? err.message : String(err),
+                });
               }
             }
+          } else {
+            const posted = await message.reply(successMsg);
+            lastPostedMessage = posted ?? lastPostedMessage;
+          }
+        } else {
+          if (itemId !== undefined) {
+            try {
+              const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
+              if (lastPostedMessage && typeof lastPostedMessage.edit === "function") {
+                const prevContent = typeof lastPostedMessage.content === "string" ? lastPostedMessage.content : successMsg;
+                try {
+                  await lastPostedMessage.edit(prevContent + appended);
+                } catch (err) {
+                  logger.warn("Failed to edit completed message with item id", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+                  if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
+                  else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
+                }
+              } else {
+                if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
+                else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
+              }
+            } catch (err) {
+              logger.warn("Failed to post item link follow-up", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+            }
+          } else {
+            logger.debug("Skipping duplicate final success message because completed event was already posted", { messageId: message.id, url });
+          }
+        }
 
         await sendGeneratedSummary(message, summaryTargetThread, finalResult);
 
@@ -616,24 +600,21 @@ async function processUrlWithProgress(
           }
         }
       } else {
-        // Remove processing reaction and add failure reaction
         await removeReaction(message, PROCESSING_REACTION);
         await addReaction(message, FAILURE_REACTION);
-        
+
         const displayUrl = `\`${url}\``;
-        const errorBody = finalResult.error || CLI_UNAVAILABLE_MESSAGE;
+        const errorBody = finalResult?.error || CLI_UNAVAILABLE_MESSAGE;
         const errorMsg = `❌ Failed to add ${displayUrl}\n\n${errorBody}`;
 
-        // If the CLI returned structured diagnostic info (exitCode/stderr),
-        // build and post a more detailed report for maintainers in-thread.
-        if (!finalResult.success && (finalResult.exitCode !== undefined || finalResult.stderr)) {
+        if (!finalResult?.success && (finalResult?.exitCode !== undefined || finalResult?.stderr)) {
           try {
             const cmd = `add --format ndjson ${url}`;
             const report = buildCliErrorReport({
               command: cmd,
               args: [],
-              exitCode: finalResult.exitCode,
-              stderr: finalResult.stderr,
+              exitCode: finalResult?.exitCode,
+              stderr: finalResult?.stderr,
               note: "Observed during processing of user-submitted URL",
             });
 
@@ -658,7 +639,6 @@ async function processUrlWithProgress(
                 }
               }
             } else {
-              // Try to create a dedicated thread for the error report using helper
               const t = await createThreadForMessage(message, `CLI error: ${new URL(url).hostname}`, 60);
               if (t) {
                 try {
@@ -682,7 +662,6 @@ async function processUrlWithProgress(
                   }
                 }
               } else {
-                // Last resort - reply in channel
                 try {
                   await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
                   await message.reply(errorMsg);
@@ -696,7 +675,6 @@ async function processUrlWithProgress(
             }
           } catch (err) {
             logger.warn("Error while attempting to post CLI error report", { error: err instanceof Error ? err.message : String(err) });
-            // Fallback to the simple error message
             if (thread) {
               try {
                 await thread.send(errorMsg);
@@ -720,11 +698,9 @@ async function processUrlWithProgress(
             }
           }
         } else {
-          // No structured diagnostics available - post a concise error message
           if (thread) {
             try {
               await thread.send(errorMsg);
-              // Archive the thread after failure
               await thread.setArchived(true);
             } catch (error) {
               logger.warn("Failed to send final error message to thread; falling back to channel reply", {
@@ -741,16 +717,33 @@ async function processUrlWithProgress(
               }
             }
           } else {
-            // Fallback to message reply if no thread
             await message.reply(errorMsg);
           }
         }
       }
     } else {
-      logger.error("CLI generator did not return a result", { 
-        messageId: message.id, 
-        url
+      logger.error("CLI generator did not return a result", {
+        messageId: message.id,
+        url,
       });
+
+      try {
+        await removeReaction(message, PROCESSING_REACTION);
+        await addReaction(message, FAILURE_REACTION);
+      } catch {
+        // ignore reaction failures
+      }
+
+      try {
+        await message.reply(
+          "❌ Failed to add URL: internal error while processing the request. The CLI did not return a result."
+        );
+      } catch (err) {
+        logger.warn("Failed to send fallback error reply when CLI returned no result", {
+          messageId: message.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   } catch (error) {
     logger.error("Exception during URL processing", {
@@ -1377,6 +1370,11 @@ const bot = new DiscordBot({
       return;
     }
 
+    // Handle /recent
+    if (await recentCommandHandler.handleCommand(cmd)) {
+      return;
+    }
+
     // Handle /search
     if (commandName === "search") {
       try {
@@ -1818,14 +1816,17 @@ const bot = new DiscordBot({
       if (obAddMatch) {
       let payload = String(obAddMatch[1] || "").trim();
 
-      // If payload is empty, attempt to use the referenced/replied-to message's content
+      // If payload is empty, attempt to use the referenced/replied-to message's
+      // content or a text attachment on the referenced message (or the same
+      // message for the inline-attachment case).
       let fetchRefFailed = false;
+      let refMsg: any = null;
       if (!payload && message.reference && (message.reference as any).messageId) {
         try {
           const refId = (message.reference as any).messageId;
           const chAny = message.channel as any;
           if (chAny && chAny.messages && typeof chAny.messages.fetch === "function") {
-            const refMsg = await chAny.messages.fetch(refId);
+            refMsg = await chAny.messages.fetch(refId);
             payload = (refMsg?.content || "").trim();
           }
         } catch (err) {
@@ -1835,6 +1836,64 @@ const bot = new DiscordBot({
             referencedMessageId: (message.reference as any).messageId,
             error: err instanceof Error ? err.message : String(err),
           });
+        }
+      }
+
+      // If we still don't have payload, check for attachments on the referenced
+      // message (if available) or the current message (inline attachment).
+      if (!payload) {
+        const atts: any = refMsg?.attachments || (message as any).attachments;
+        if (atts && atts.size && atts.size > 0) {
+          const att = atts.first();
+          // Basic filename-based validation for likely text files
+          const name = String(att?.name || "").toLowerCase();
+          const allowedExts = [".md", ".markdown", ".txt"];
+          const hasTextExt = allowedExts.some((e) => name.endsWith(e));
+
+          try {
+            // Fetch the attachment and validate content type / size
+            const resp = await fetch(att.url);
+            if (!resp || !resp.ok) {
+              // Fall back to replying with original message content if present
+              payload = (refMsg?.content || "").trim() || (message as any).content || "";
+            } else {
+              const contentType = resp.headers && typeof resp.headers.get === "function" ? resp.headers.get("content-type") : null;
+              const contentLength = resp.headers && typeof resp.headers.get === "function" ? resp.headers.get("content-length") : null;
+
+              // If filename looks like text or Content-Type indicates text/*, accept.
+              if (!hasTextExt && contentType && !contentType.startsWith("text/")) {
+                await message.reply("\u26a0\ufe0f The referenced attachment does not appear to be a text file (unsupported Content-Type). Please provide a .md or .txt file or paste the text directly.");
+                return;
+              }
+
+              // If Content-Length header claims it's too big, reject early
+              const MAX_ADD_BYTES = Number(process.env.OB_ADD_MAX_BYTES || 64 * 1024);
+              if (contentLength && /^\d+$/.test(String(contentLength)) && Number(contentLength) > MAX_ADD_BYTES) {
+                logger.warn("ob add attachment too large (content-length)", { messageId: message.id, size: Number(contentLength), max: MAX_ADD_BYTES });
+                await message.reply(`\u26a0\ufe0f Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`);
+                return;
+              }
+
+              // Read attachment body as text and enforce size limit
+              const textBody = await resp.text();
+              if (Buffer.byteLength(textBody, "utf8") > MAX_ADD_BYTES) {
+                logger.warn("ob add attachment too large (body)", { messageId: message.id, size: Buffer.byteLength(textBody, "utf8"), max: MAX_ADD_BYTES });
+                await message.reply(`\u26a0\ufe0f Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`);
+                return;
+              }
+
+              payload = textBody.trim();
+            }
+          } catch (err) {
+            logger.warn("Failed to fetch attachment for ob add", { messageId: message.id, url: att?.url, error: err instanceof Error ? err.message : String(err) });
+            // If fetching the referenced message failed earlier, inform the user
+            if (fetchRefFailed) {
+              await message.reply("\u26a0\ufe0f I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again.");
+              return;
+            }
+            // Otherwise fall through to ask for text
+            payload = (refMsg?.content || "").trim() || (message as any).content || "";
+          }
         }
       }
 
@@ -2023,3 +2082,6 @@ const bot = new DiscordBot({
 
 createShutdownController(logger);
 void startBot(() => bot.start(), logger);
+
+// Export internals for testing
+export { processUrlWithProgress };

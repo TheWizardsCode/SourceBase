@@ -30,6 +30,10 @@ SourceBase automatically extracts URLs from Discord messages, fetches content me
 - Behavior and limits:
   - The bot writes the provided text to a temporary file and calls the OpenBrain CLI (`ob add`) with a `file://` URL so the existing CLI-based ingestion pipeline is reused.
   - To avoid abuse, the bot enforces a conservative default size limit of 64 KiB for direct text ingestion. You can override this limit with the environment variable `OB_ADD_MAX_BYTES` (value in bytes).
+  - Attachment support:
+    - You can reply to a message that contains a text-like file attachment (for example `.md`, `.markdown`, `.txt`) with `ob add` and the bot will fetch the attachment body and ingest it.
+    - The bot accepts files with a text/* Content-Type or filenames ending in `.md`, `.markdown`, or `.txt`. Binary files (e.g. `application/octet-stream`) are rejected with a helpful error.
+    - The same size limit (default 64 KiB, configurable via `OB_ADD_MAX_BYTES`) applies to attachments; oversized attachments are rejected with a clear message.
   - If the bot cannot fetch the referenced message (reply flow), it will reply with a helpful message explaining the permission issue and how to proceed.
   - If the CLI is unavailable, the bot will notify the user with a friendly error message.
 

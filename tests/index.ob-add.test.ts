@@ -273,6 +273,37 @@ describe("ob add message handler failure modes", () => {
     expect(replies[0]).toContain("too large to ingest");
   });
 
+  it("rejects non-text/binary attachment from referenced message", async () => {
+    const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
+      await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {
+        const actual: any = await importOriginal();
+        return {
+          ...actual,
+          runAddCommand: vi.fn(() => createAddGenerator([], { success: false, error: "", url: "", id: undefined } as any)),
+          runCliCommand: vi.fn(),
+          runQueueCommand: vi.fn(),
+          runSummaryCommand: vi.fn(),
+          runStatsCommand: vi.fn(async () => ({ totalLinks: 0, processedCount: 0, pendingCount: 0, failedCount: 0 })),
+          isCliAvailable: vi.fn(async () => true),
+          CliRunnerError: class MockCliRunnerError extends Error {},
+        };
+      });
+    });
+
+    // Mock fetch to return a non-text Content-Type
+    global.fetch = vi.fn(async () => ({ ok: true, headers: { get: (_: string) => "application/octet-stream" }, text: async () => "\u0000\u0001binary" } as any));
+
+    const { message, replies } = createFakeMessage("ob add");
+    const att = { url: "https://example.test/file.bin", name: "file.bin" };
+    message.reference = { messageId: "ref-bin" };
+    message.channel = { messages: { fetch: vi.fn().mockResolvedValue({ content: "", attachments: { size: 1, first: () => att } }) } };
+
+    await onMonitoredMessage(message);
+
+    expect(replies.length).toBeGreaterThan(0);
+    expect(replies[0]).toContain("does not appear to be a text file");
+  });
+
   it("handles inline attachment on same message as ob add", async () => {
     const onMonitoredMessage = await loadMonitoredMessageHandler(async () => {
       await vi.doMock("../src/bot/cli-runner.js", async (importOriginal) => {

@@ -16,6 +16,7 @@ import {
   formatQueueFailureMessage,
   formatQueuedUrlMessage,
 } from "./presenters/queue.js";
+import QueuePresenter from "./presenters/QueuePresenter.js";
 import { ProgressPresenter } from "./presenters/progress.js";
 import {
   runAddCommand,
@@ -35,6 +36,8 @@ const logger = new Logger(config.LOG_LEVEL as any);
 const crawlCommandHandler = new CrawlCommandHandler();
 const statsCommandHandler = new StatsCommandHandler();
 const recentCommandHandler = new RecentCommandHandler();
+// QueuePresenter manages lifecycle of short-lived queue status messages
+const queuePresenter = new QueuePresenter(logger);
 
 export { formatProgressMessage };
 export { postCliErrorReport };
@@ -2029,34 +2032,41 @@ const bot = new DiscordBot({
         return;
       }
       
-      // Add processing reaction
+      // Add processing reaction and post a queue status message using QueuePresenter
       await addReaction(message, PROCESSING_REACTION);
-      
-      // Try to queue via CLI runner
+
+      let statusKey = `queue:${message.id}:${seed}`;
       try {
+        // Post an initial queued status message (best-effort)
+        await queuePresenter.createOrUpdateStatus(statusKey, message, queuePresenter.formatQueueStatusMessage({ processing: true, url: seed }));
+
         const queueResult = await crawlCommandHandler.queueSeed(message, seed);
-        
+
         if (queueResult.success) {
           // Remove processing reaction and add success reaction
           await removeReaction(message, PROCESSING_REACTION);
           await addReaction(message, SUCCESS_REACTION);
-          
+
+          // Update the status message to indicate queued/success
+          await queuePresenter.createOrUpdateStatus(statusKey, message, queuePresenter.formatQueueStatusMessage({ position: 0, total: 0, url: seed, note: "Queued" }));
+
           // Wrap in code ticks to avoid Discord creating an embed in the reply
           await message.reply(formatQueuedUrlMessage(seed));
         } else {
           // Remove processing reaction and add failure reaction
           await removeReaction(message, PROCESSING_REACTION);
           await addReaction(message, FAILURE_REACTION);
-          
-          // Wrap the URL in angle brackets to prevent Discord creating embeds,
-          // and leave a blank line before the echoed error message.
+
+          // Update or clear the status and reply with failure message
+          await queuePresenter.createOrUpdateStatus(statusKey, message, queuePresenter.formatQueueStatusMessage({ url: seed, note: `Failed: ${queueResult.error}` }));
           await message.reply(formatQueueFailureMessage(queueResult.error, CLI_UNAVAILABLE_MESSAGE));
         }
       } catch (error) {
         // Remove processing reaction and add failure reaction
         await removeReaction(message, PROCESSING_REACTION);
         await addReaction(message, FAILURE_REACTION);
-        
+
+        // Record CLI-origin errors and attempt to post diagnostic reports as before
         if (error instanceof CliRunnerError) {
           logger.error("CLI error during queue command", {
             messageId: message.id,
@@ -2064,7 +2074,7 @@ const bot = new DiscordBot({
             exitCode: error.exitCode,
             stderr: error.stderr,
           });
-          // Attempt to post a detailed CLI error report in a thread or reply
+
           try {
             const cmd = `queue ${seed}`;
             const report = buildCliErrorReport({
@@ -2073,7 +2083,7 @@ const bot = new DiscordBot({
               exitCode: error.exitCode,
               stderr: error.stderr,
               spawnError: error.message,
-              note: "Observed during user-invoked queue command"
+              note: "Observed during user-invoked queue command",
             });
 
             if (typeof message.startThread === "function") {
@@ -2094,6 +2104,13 @@ const bot = new DiscordBot({
           }
         } else {
           throw error;
+        }
+      } finally {
+        // Ensure we clear the temporary status message to avoid stale messages
+        try {
+          await queuePresenter.clearStatus(statusKey);
+        } catch {
+          // ignore
         }
       }
 

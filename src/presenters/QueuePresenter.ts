@@ -1,0 +1,154 @@
+import type { Logger } from "../logger.js";
+
+/**
+ * QueuePresenter
+ *
+ * Encapsulates lifecycle management for queue status messages and a small
+ * channel-focused cache. This is intentionally lightweight: it provides a
+ * single place to reason about creating, updating and clearing short-lived
+ * queue status messages in Discord targets (channels or threads).
+ */
+export class QueuePresenter {
+  // Map key -> posted Discord message object
+  private readonly queueStatusMessages: Map<string, any> = new Map();
+
+  // Lightweight cache for channel-scoped values (e.g., last known queue position)
+  private readonly channelCache: Map<string, unknown> = new Map();
+
+  constructor(private readonly logger?: Logger) {}
+
+  /**
+   * Render a simple queue status message body. Kept here so formatting is
+   * colocated with the lifecycle logic.
+   */
+  formatQueueStatusMessage(params: {
+    position?: number;
+    total?: number;
+    processing?: boolean;
+    url?: string;
+    note?: string;
+  }): string {
+    const parts: string[] = [];
+    if (params.processing) parts.push("🔄 Processing");
+    if (typeof params.position === "number") {
+      if (typeof params.total === "number") parts.push(`Position ${params.position}/${params.total}`);
+      else parts.push(`Position ${params.position}`);
+    }
+    if (params.url) parts.push(`URL: <${params.url}>`);
+    if (params.note) parts.push(params.note);
+
+    if (parts.length === 0) return "Queue status";
+    return parts.join(" — ");
+  }
+
+  /**
+   * Flexible helper that accepts a target which may provide `send()` or
+   * `reply()` for posting messages. This keeps callers (message vs thread)
+   * interoperable without forcing a strict target type.
+   */
+  private async postToTarget(target: any, body: string): Promise<any> {
+    if (!target) return undefined;
+    try {
+      if (typeof target.send === "function") return await target.send(body);
+      if (typeof target.reply === "function") return await target.reply(body);
+      // Fallback: if a channel is provided
+      if (target.channel && typeof target.channel.send === "function") return await target.channel.send(body);
+    } catch (err) {
+      this.logger?.warn?.("QueuePresenter.postToTarget failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+    return undefined;
+  }
+
+  /**
+   * Create or update a status message keyed by `key` in the provided target.
+   * The `target` may expose `send(content)` or `reply(content)` which resolves
+   * to a message object; if the previously-posted message supports `edit()`
+   * it will be used for updates to avoid clutter.
+   */
+  async createOrUpdateStatus(key: string, target: any, body: string): Promise<any> {
+    const existing = this.queueStatusMessages.get(key);
+    try {
+      if (existing && typeof existing.edit === "function") {
+        await existing.edit(body);
+        this.logger?.debug?.("QueuePresenter: edited existing status message", { key });
+        return existing;
+      }
+
+      const posted = await this.postToTarget(target, body);
+      this.queueStatusMessages.set(key, posted ?? null);
+      this.logger?.debug?.("QueuePresenter: posted new status message", { key });
+      return posted;
+    } catch (err) {
+      this.logger?.warn?.("QueuePresenter: failed to post/update status message", { key, error: err instanceof Error ? err.message : String(err) });
+      return undefined;
+    }
+  }
+
+  /**
+   * Remove a status message (if present). If the message exposes `delete()`
+   * it will be called; otherwise we attempt to edit the message to indicate
+   * removal. Finally the internal map entry is removed.
+   */
+  async clearStatus(key: string): Promise<void> {
+    const existing = this.queueStatusMessages.get(key);
+    if (!existing) return;
+    try {
+      if (typeof existing.delete === "function") {
+        await existing.delete();
+      } else if (typeof existing.edit === "function") {
+        // Clear the content as a best-effort fallback
+        await existing.edit("(removed)");
+      }
+    } catch (err) {
+      this.logger?.warn?.("QueuePresenter: failed to remove status message", { key, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      this.queueStatusMessages.delete(key);
+    }
+  }
+
+  /**
+   * Return the stored message instance for a key, if any.
+   */
+  getStatusMessage(key: string): any {
+    return this.queueStatusMessages.get(key);
+  }
+
+  /**
+   * Channel cache helpers
+   */
+  setChannelCache(channelId: string, value: unknown): void {
+    this.channelCache.set(channelId, value);
+  }
+
+  getChannelCache(channelId: string): unknown | undefined {
+    return this.channelCache.get(channelId);
+  }
+
+  clearChannelCache(channelId: string): void {
+    this.channelCache.delete(channelId);
+  }
+
+  /**
+   * Clear all tracked messages and cache (useful during shutdown/test cleanup).
+   */
+  async clearAll(): Promise<void> {
+    const keys = Array.from(this.queueStatusMessages.keys());
+    await Promise.all(keys.map((k) => this.clearStatus(k)));
+    this.channelCache.clear();
+  }
+}
+
+export default QueuePresenter;
+
+// Backwards-compatible formatting helpers moved from presenters/queue.ts
+export function formatMissingCrawlSeedMessage(): string {
+  return "Please pass a seed URL to crawl, for example: `crawl https://example.com`.";
+}
+
+export function formatQueuedUrlMessage(seed: string): string {
+  return `Queued URL for crawling: \`${seed}\``;
+}
+
+export function formatQueueFailureMessage(error: string | undefined, fallbackError: string): string {
+  return `Failed to queue URL\n\n${error || fallbackError}`;
+}

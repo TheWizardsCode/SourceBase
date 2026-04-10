@@ -9,8 +9,7 @@ import { postCliErrorReport } from "./discord/cli-error-report.js";
 import { CrawlCommandHandler } from "./handlers/CrawlCommandHandler.js";
 import { StatsCommandHandler } from "./handlers/StatsCommandHandler.js";
 import { RecentCommandHandler } from "./handlers/RecentCommandHandler.js";
-import { startBot } from "./lifecycle/startup.js";
-import { createShutdownController } from "./lifecycle/shutdown.js";
+import { LifecycleManager } from "./lifecycle/LifecycleManager.js";
 import {
   formatMissingCrawlSeedMessage,
   formatQueueFailureMessage,
@@ -2139,8 +2138,50 @@ const bot = new DiscordBot({
 // Startup and Shutdown
 // ============================================================================
 
-createShutdownController(logger);
-void startBot(() => bot.start(), logger);
+// Create lifecycle manager for comprehensive startup/shutdown management
+const lifecycleManager = new LifecycleManager({
+  logger,
+  client: bot.client,
+  startupNotification: config.STARTUP_NOTIFICATION_CHANNEL_ID
+    ? {
+        channelId: config.STARTUP_NOTIFICATION_CHANNEL_ID,
+        includeTimestamp: true,
+      }
+    : undefined,
+  shutdownConfig: {
+    timeoutMs: 30000,
+    cleanupStatusMessages: true,
+    performLostItemRecovery: true,
+  },
+  eventListeners: {
+    onStartupBegin: () => {
+      logger.info("Bot startup sequence beginning");
+    },
+    onStartupComplete: () => {
+      logger.info("Bot startup sequence completed");
+    },
+    onShutdownBegin: (signal: string) => {
+      logger.info(`Bot shutdown initiated by ${signal}`);
+    },
+    onShutdownComplete: () => {
+      logger.info("Bot shutdown sequence completed");
+    },
+  },
+});
+
+// Start the bot with lifecycle management
+void (async () => {
+  try {
+    await bot.start();
+    await lifecycleManager.performStartup();
+  } catch (error) {
+    logger.error("Failed to start bot", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
+})();
 
 // Export internals for testing
 export { processUrlWithProgress };
+export { lifecycleManager };

@@ -42,6 +42,9 @@ export const botConfigSchema = z.object({
   
   // File URL configuration
   ALLOWED_FILE_URL_USERS: z.string().optional().transform(v => v ? v.split(',').map(id => id.trim()) : []),
+  
+  // Lifecycle configuration
+  STARTUP_NOTIFICATION_CHANNEL_ID: z.string().optional(),
 });
 
 const parsed = botConfigSchema.safeParse(process.env);

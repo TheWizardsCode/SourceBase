@@ -1,78 +1,69 @@
-import type { Message } from "discord.js";
+import type { Message, ThreadChannel } from "discord.js";
+import type { AddProgressEvent } from "../bot/cli-runner.js";
 import { formatProgressMessage } from "../formatters/progress.js";
+import type { Logger } from "../logger.js";
 
 /**
- * ProgressPresenter
+ * Manages Discord status message lifecycle for CLI progress events.
  *
- * Instance-based presenter that encapsulates per-processing-session state.
- * Responsibilities:
- * - Post progress updates to a ThreadChannel or channel reply
- * - Deduplicate successive events with the same phase
- * - Suppress events after a terminal phase (completed/failed)
- * - Retain the last posted message for the session so callers can append
- *   item links when the CLI returns an ID
- *
- * Public API (instance methods):
- * - handleProgressEvent(event): Promise<boolean>  // posts update if needed
- * - isTerminalPhaseSeen(): boolean
- * - getStatusMessages(): Map<string, any>
- * - getLastPhase(): string | null
- * - getLastPostedMessage(): any | null
- * - postMessage(text): Promise<any>
- * - appendItemLink(itemLink, itemId, successMsgFallback?): Promise<void>
+ * Responsible for:
+ * - Formatting progress messages using phase emojis and labels
+ * - Tracking posted status messages via a keyed Map
+ * - Creating status messages in the appropriate Discord target (thread or channel)
+ * - Deduplicating progress updates (only posting when the phase changes)
+ * - Suppressing further updates once a terminal phase is observed
  */
 export class ProgressPresenter {
-  private thread: any;
-  private message: Message;
-  private logger: any;
-  private statusMessages: Map<string, any> = new Map();
+  private readonly statusMessages: Map<string, any> = new Map();
+
   private lastPhase: string | null = null;
+  private terminalPhaseSeen = false;
   private lastPostedMessage: any = null;
-  private terminal: boolean = false;
 
-  constructor(thread: any, message: Message, logger: any) {
-    this.thread = thread;
-    this.message = message;
-    this.logger = logger;
-  }
+  constructor(
+    private readonly thread: ThreadChannel | null,
+    private readonly message: Message,
+    private readonly logger: Logger
+  ) {}
 
-  isTerminalPhaseSeen(): boolean {
-    return this.terminal;
-  }
-
-  getStatusMessages(): Map<string, any> {
-    return new Map(this.statusMessages);
-  }
-
-  getLastPhase(): string | null {
-    return this.lastPhase;
-  }
-
-  getLastPostedMessage(): any | null {
-    return this.lastPostedMessage ?? null;
-  }
-
-  /** Post a raw message to the thread or channel and record it as lastPostedMessage */
-  async postMessage(text: string): Promise<any> {
-    try {
-      if (this.thread && typeof this.thread.send === "function") {
-        const posted = await this.thread.send(text);
-        this.lastPostedMessage = posted ?? this.lastPostedMessage;
-        return posted;
-      }
-
-      if (this.message && typeof (this.message as any).reply === "function") {
-        const posted = await (this.message as any).reply(text);
-        this.lastPostedMessage = posted ?? this.lastPostedMessage;
-        return posted;
-      }
-    } catch (err) {
-      this.logger?.warn?.("Failed to post message via ProgressPresenter", { error: err instanceof Error ? err.message : String(err) });
+  /**
+   * Handle a CLI progress event, posting a Discord status update if the phase changed.
+   *
+   * @param event - The progress event from the CLI runner.
+   * @returns `true` if a status message was posted, `false` if the event was skipped
+   *          (e.g. duplicate phase or post-terminal event).
+   */
+  async handleProgressEvent(event: AddProgressEvent): Promise<boolean> {
+    if (this.terminalPhaseSeen) {
+      this.logger.debug("Ignoring CLI progress event after terminal phase", {
+        messageId: this.message.id,
+        phase: event.phase,
+      });
+      return false;
     }
-    return undefined;
+
+    if (event.phase === this.lastPhase) {
+      return false;
+    }
+
+    this.lastPhase = event.phase ?? null;
+
+    const progressMsg = formatProgressMessage(event);
+    const safeProgressMsg = this.makeSafeProgressMsg(event, progressMsg);
+
+    await this.postStatusMessage(event.phase, safeProgressMsg);
+
+    if (event.phase === "completed" || event.phase === "failed") {
+      this.terminalPhaseSeen = true;
+    }
+
+    return true;
   }
 
-  private safeWrapText(event: any, progressMsg: string): string {
+  /**
+   * Wrap URLs and titles in backticks so Discord does not create embeds for them.
+   */
+  private makeSafeProgressMsg(event: AddProgressEvent, progressMsg: string): string {
     try {
       if (event.title) return progressMsg.replace(event.title, `\`${event.title}\``);
       if (event.url) return progressMsg.replace(event.url, `\`${event.url}\``);
@@ -83,66 +74,52 @@ export class ProgressPresenter {
   }
 
   /**
-   * Handle a CLI progress event. Returns true if a message was posted.
+   * Post a status message to the thread (preferred) or channel (fallback).
+   * Updates `statusMessages` and `lastPostedMessage` on success.
    */
-  async handleProgressEvent(event: any): Promise<boolean> {
-    // If a terminal phase was already seen, suppress further events
-    if (this.terminal) {
-      this.logger?.debug?.("Suppressing event after terminal phase", { messageId: this.message?.id, phase: event?.phase });
-      return false;
-    }
+  private async postStatusMessage(phase: string | undefined, content: string): Promise<void> {
+    const key = phase ?? "__unknown__";
 
-    const phase = typeof event?.phase === "string" && event.phase.trim() !== "" ? event.phase : undefined;
-    if (phase !== undefined && phase === this.lastPhase) {
-      // deduplicate same-phase events
-      return false;
-    }
-
-    const progressMsg = formatProgressMessage(event);
-    const safeProgressMsg = this.safeWrapText(event, progressMsg);
-
-    // Attempt to post to thread then fallback to reply
-    try {
-      let posted: any = undefined;
-      if (this.thread && typeof this.thread.send === "function") {
-        try {
-          posted = await this.thread.send(safeProgressMsg);
-        } catch (err) {
-          this.logger?.warn?.("Failed to send progress update to thread; falling back to channel reply", { threadId: this.thread?.id, phase, error: err instanceof Error ? err.message : String(err) });
-          if (this.message && typeof (this.message as any).reply === "function") {
-            posted = await (this.message as any).reply(safeProgressMsg);
-          }
-        }
-      } else if (this.message && typeof (this.message as any).reply === "function") {
-        posted = await (this.message as any).reply(safeProgressMsg);
-      }
-
-      if (posted !== undefined) {
-        // Record per-phase posted message for later inspection/edit
-        const key = phase ?? `unknown:${Date.now()}`;
-        this.statusMessages.set(key, posted);
+    if (this.thread) {
+      try {
+        const posted = await this.thread.send(content);
         this.lastPostedMessage = posted ?? this.lastPostedMessage;
+        if (posted) this.statusMessages.set(key, posted);
+      } catch (error) {
+        this.logger.warn(
+          "Failed to send progress update to thread; falling back to channel reply",
+          {
+            threadId: this.thread.id,
+            phase,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        );
+        try {
+          const posted = await this.message.reply(content);
+          this.lastPostedMessage = posted ?? this.lastPostedMessage;
+          if (posted) this.statusMessages.set(key, posted);
+        } catch (err) {
+          this.logger.warn("Failed to send fallback progress reply to channel", {
+            messageId: this.message.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
-    } catch (err) {
-      this.logger?.warn?.("Failed to deliver progress update", { messageId: this.message?.id, phase, error: err instanceof Error ? err.message : String(err) });
-    }
-
-    // Mark terminal phases
-    try {
-      if (event && (event.phase === "completed" || event.phase === "failed")) {
-        this.terminal = true;
+    } else {
+      try {
+        const posted = await this.message.reply(content);
+        this.lastPostedMessage = posted ?? this.lastPostedMessage;
+        if (posted) this.statusMessages.set(key, posted);
+      } catch (err) {
+        this.logger.warn("Failed to send progress update to channel", {
+          messageId: this.message.id,
+          phase,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
-    } catch {
-      // ignore
     }
-
-    this.lastPhase = phase ?? this.lastPhase;
-    return true;
   }
 
-  /**
-   * Append an item link to the last posted message when possible.
-   */
   async appendItemLink(itemLink: string | undefined, itemId: number | undefined, successMsgFallback?: string): Promise<void> {
     if (!itemLink || itemId === undefined) return;
     const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
@@ -153,19 +130,34 @@ export class ProgressPresenter {
         await this.lastPostedMessage.edit(prevContent + appended);
         return;
       } catch (err) {
-        this.logger?.warn?.("Failed to edit completed message with item id", { messageId: this.message?.id, error: err instanceof Error ? err.message : String(err) });
+        this.logger.warn("Failed to edit completed message with item id", { messageId: this.message.id, error: err instanceof Error ? err.message : String(err) });
       }
     }
 
-    // Fallback: post as a new message to thread or channel
     try {
       if (this.thread && typeof this.thread.send === "function") {
-        await this.thread.send(`✅ OpenBrain item: <${itemLink}>`);
+        await this.thread.send(`\u2705 OpenBrain item: <${itemLink}>`);
       } else if (this.message && typeof (this.message as any).reply === "function") {
-        await (this.message as any).reply(`✅ OpenBrain item: <${itemLink}>`);
+        await (this.message as any).reply(`\u2705 OpenBrain item: <${itemLink}>`);
       }
     } catch {
       // ignore
     }
+  }
+
+  getLastPostedMessage(): any {
+    return this.lastPostedMessage;
+  }
+
+  getLastPhase(): string | null {
+    return this.lastPhase;
+  }
+
+  isTerminalPhaseSeen(): boolean {
+    return this.terminalPhaseSeen;
+  }
+
+  getStatusMessages(): ReadonlyMap<string, any> {
+    return this.statusMessages;
   }
 }

@@ -16,6 +16,7 @@ import {
   formatQueueFailureMessage,
   formatQueuedUrlMessage,
 } from "./presenters/queue.js";
+import { ProgressPresenter } from "./presenters/progress.js";
 import {
   runAddCommand,
   runSummaryCommand,
@@ -470,50 +471,32 @@ async function processUrlWithProgress(
       authorId: message.author.id,
     });
     
-    let lastPhase: string | null = null;
-    // Once we see a terminal phase ('completed' or 'failed') we should
-    // suppress any subsequent progress updates emitted by the CLI to avoid
-    // confusing the user with post-completion informational objects.
-    let terminalPhaseSeen = false;
     let eventCount = 0;
     let finalResult: AddResult | undefined;
-    // Keep a reference to the last posted Discord message so we can
-    // append the created item link/ID to it when the CLI returns the ID.
-    // In real runtime this will be a discord.js Message; in tests the
-    // mocked send/reply helpers may return undefined which we handle.
-    // Track last posted message using ProgressPresenter to encapsulate state
-    let lastPostedMessage: any = null;
-    
+
+    // ProgressPresenter manages status message state and lifecycle. Create
+    // a single instance per URL processing session so it can track phase
+    // deduplication and terminal suppression across the event stream.
+    const presenter = new ProgressPresenter(thread, message, logger);
+
     // Process progress events using manual iteration to capture return value
     logger.info("Waiting for CLI progress events...", { messageId: message.id, url });
-    // Instantiate a ProgressPresenter once per processing session so it
-    // can encapsulate status message lifecycle, deduplication, and terminal
-    // suppression across events.
-    let presenter: any = null;
-    try {
-      const mod = await import("./presenters/progress.js");
-      if (typeof mod.ProgressPresenter === "function") {
-        presenter = new mod.ProgressPresenter(thread, message, logger);
-      }
-    } catch {
-      // ignore - we'll fall back to inline posting
-    }
 
     while (true) {
       const iteration = await addGenerator.next();
-      
+
       if (iteration.done) {
         // Generator completed - capture the return value
         finalResult = iteration.value;
-        logger.info("CLI generator completed", { 
-          messageId: message.id, 
-          url, 
+        logger.info("CLI generator completed", {
+          messageId: message.id,
+          url,
           eventCount,
-          hasResult: !!finalResult 
+          hasResult: !!finalResult,
         });
         break;
       }
-      
+
       // Process yielded progress event
       const event = iteration.value;
       eventCount++;
@@ -524,91 +507,56 @@ async function processUrlWithProgress(
         eventCount,
       });
 
-      // If we've already observed a terminal phase, ignore any further
-      // progress events to avoid confusing follow-up messages (some CLI
-      // implementations emit informational objects after completion).
-      if (terminalPhaseSeen) {
-        logger.debug("Ignoring CLI progress event after terminal phase", {
+      try {
+        await presenter.handleProgressEvent(event);
+      } catch (err) {
+        // Defensive fallback: if the presenter fails for any reason, log and
+        // attempt a minimal inline post so users still see progress.
+        logger.warn("ProgressPresenter.handleProgressEvent failed; falling back to inline posting", {
           messageId: message.id,
-          url,
-          eventCount,
+          error: err instanceof Error ? err.message : String(err),
         });
-        continue;
-      }
 
-        // Only send update if phase changed (avoid spam)
-        if (event.phase !== lastPhase) {
-          lastPhase = event.phase;
-
-          const progressMsg = formatProgressMessage(event);
-
-          // Always ensure URLs shown to users are wrapped in backticks to avoid embeds.
-          // If event contains a url or title, prefer showing the title wrapped in ticks.
-          const safeProgressMsg = ((): string => {
-            try {
-              if (event.title) return progressMsg.replace(event.title, `\`${event.title}\``);
-              if (event.url) return progressMsg.replace(event.url, `\`${event.url}\``);
-              return progressMsg;
-            } catch {
-              return progressMsg;
-            }
-          })();
-
-          // Prefer the instantiated presenter; fall back to inline posting
-          if (presenter) {
-            try {
-              await presenter.handleProgressEvent(event);
-              lastPostedMessage = presenter.getLastPostedMessage() ?? lastPostedMessage;
-            } catch (err) {
-              logger.warn("ProgressPresenter.handleProgressEvent failed; falling back to inline posting", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-              // fall through to inline posting below
-              try {
-                if (thread) {
-                  const posted = await thread.send(safeProgressMsg);
-                  lastPostedMessage = posted ?? lastPostedMessage;
-                } else {
-                  const posted = await message.reply(safeProgressMsg);
-                  lastPostedMessage = posted ?? lastPostedMessage;
-                }
-              } catch (err2) {
-                logger.warn("Failed to post progress update via fallback path", { messageId: message.id, error: err2 instanceof Error ? err2.message : String(err2) });
-              }
-            }
-          } else {
-            try {
-              if (thread) {
-                const posted = await thread.send(safeProgressMsg);
-                lastPostedMessage = posted ?? lastPostedMessage;
-              } else {
-                const posted = await message.reply(safeProgressMsg);
-                lastPostedMessage = posted ?? lastPostedMessage;
-              }
-            } catch (err) {
-              logger.warn("Failed to send progress update to channel/thread", { messageId: message.id, phase: event.phase, error: err instanceof Error ? err.message : String(err) });
-            }
+        // Build a safe progress message (wrap title/url in backticks)
+        const progressMsg = formatProgressMessage(event);
+        const safeProgressMsg = (() => {
+          try {
+            if (event.title) return progressMsg.replace(event.title, `\`${event.title}\``);
+            if (event.url) return progressMsg.replace(event.url, `\`${event.url}\``);
+            return progressMsg;
+          } catch {
+            return progressMsg;
           }
-        }
+        })();
 
-        // If this event indicates a terminal state, mark it so we ignore
-        // any subsequent non-actionable events.
         try {
-          if (event.phase === "completed" || event.phase === "failed") {
-            terminalPhaseSeen = true;
+          if (thread) {
+            await thread.send(safeProgressMsg);
+          } else {
+            await message.reply(safeProgressMsg);
           }
-        } catch {
-          // ignore
+        } catch (err2) {
+          logger.warn("Failed to post progress update via fallback path", {
+            messageId: message.id,
+            error: err2 instanceof Error ? err2.message : String(err2),
+          });
         }
       }
+    }
+
+    // Retrieve presenter state for final result handling
+    const lastPhase = presenter.getLastPhase();
+    let lastPostedMessage: any = presenter.getLastPostedMessage();
     if (finalResult) {
       logger.info("CLI processing complete", {
         messageId: message.id,
         url,
-        success: finalResult?.success,
-        title: finalResult?.title,
-        error: finalResult?.error,
+        success: finalResult.success,
+        title: finalResult.title,
+        error: finalResult.error,
       });
 
-      if (finalResult?.success) {
+      if (finalResult.success) {
         await removeReaction(message, PROCESSING_REACTION);
         await addReaction(message, SUCCESS_REACTION);
 
@@ -626,73 +574,54 @@ async function processUrlWithProgress(
         if (!alreadyCompleted) {
           // Post a final success message if the completed phase wasn't already
           // observed via progress events.
-          if (thread) {
-            try {
-              const posted = await thread.send(successMsg);
-              lastPostedMessage = posted ?? lastPostedMessage;
-            } catch (error) {
-              logger.warn("Failed to send final success message to thread; falling back to channel reply", {
-                threadId: thread.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-              summaryTargetThread = null;
+            if (thread) {
               try {
-                const posted = await message.reply(successMsg);
+                const posted = await thread.send(successMsg);
                 lastPostedMessage = posted ?? lastPostedMessage;
-              } catch (err) {
-                logger.warn("Failed to send fallback success reply to channel", {
-                  messageId: message.id,
-                  error: err instanceof Error ? err.message : String(err),
+              } catch (error) {
+                logger.warn("Failed to send final success message to thread; falling back to channel reply", {
+                  threadId: thread.id,
+                  error: error instanceof Error ? error.message : String(error),
                 });
+                summaryTargetThread = null;
+                try {
+                  const posted = await message.reply(successMsg);
+                  lastPostedMessage = posted ?? lastPostedMessage;
+                } catch (err) {
+                  logger.warn("Failed to send fallback success reply to channel", {
+                    messageId: message.id,
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                }
               }
+            } else {
+              const posted = await message.reply(successMsg);
+              lastPostedMessage = posted ?? lastPostedMessage;
             }
-          } else {
-            const posted = await message.reply(successMsg);
-            lastPostedMessage = posted ?? lastPostedMessage;
-          }
         } else {
           // completed phase was already posted; try to append item link to
           // the last posted message, or fall back to posting the link.
           if (itemId !== undefined) {
             try {
-              if (presenter && typeof presenter.appendItemLink === "function") {
-                try {
-                  await presenter.appendItemLink(itemLink, itemId, successMsg);
-                } catch (err) {
-                  logger.warn("ProgressPresenter.appendItemLink failed; falling back to inline posting", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-                  const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
-                  if (lastPostedMessage && typeof lastPostedMessage.edit === "function") {
-                    const prevContent = typeof lastPostedMessage.content === "string" ? lastPostedMessage.content : successMsg;
-                    try {
-                      await lastPostedMessage.edit(prevContent + appended);
-                    } catch (err2) {
-                      logger.warn("Failed to edit completed message with item id", { messageId: message.id, error: err2 instanceof Error ? err2.message : String(err2) });
-                      if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
-                      else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
-                    }
-                  } else {
-                    if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
-                    else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
-                  }
-                }
-              } else {
-                const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
+              // Prefer using the presenter's appendItemLink() helper which will
+              // attempt to edit the last posted message or post a follow-up when
+              // editing is not possible.
+              await presenter.appendItemLink(itemLink, itemId, successMsg);
+            } catch (err) {
+              logger.warn("ProgressPresenter.appendItemLink failed; falling back to inline posting", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
+              const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
+              try {
                 if (lastPostedMessage && typeof lastPostedMessage.edit === "function") {
                   const prevContent = typeof lastPostedMessage.content === "string" ? lastPostedMessage.content : successMsg;
-                  try {
-                    await lastPostedMessage.edit(prevContent + appended);
-                  } catch (err2) {
-                    logger.warn("Failed to edit completed message with item id", { messageId: message.id, error: err2 instanceof Error ? err2.message : String(err2) });
-                    if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
-                    else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
-                  }
+                  await lastPostedMessage.edit(prevContent + appended);
+                } else if (thread) {
+                  await thread.send(`✅ OpenBrain item: <${itemLink}>`);
                 } else {
-                  if (thread) await thread.send(`✅ OpenBrain item: <${itemLink}>`);
-                  else await message.reply(`✅ OpenBrain item: <${itemLink}>`);
+                  await message.reply(`✅ OpenBrain item: <${itemLink}>`);
                 }
+              } catch (err2) {
+                logger.warn("Failed to post item link follow-up", { messageId: message.id, error: err2 instanceof Error ? err2.message : String(err2) });
               }
-            } catch (err) {
-              logger.warn("Failed to post item link follow-up", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
             }
           } else {
             logger.debug("Skipping duplicate final success message because completed event was already posted", { messageId: message.id, url });

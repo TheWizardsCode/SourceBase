@@ -1,4 +1,11 @@
-import { ThreadChannel, type Message, type Interaction, type ButtonInteraction, type CommandInteraction } from "discord.js";
+import {
+  PermissionFlagsBits,
+  ThreadChannel,
+  type ButtonInteraction,
+  type ChatInputCommandInteraction,
+  type Interaction,
+  type Message,
+} from "discord.js";
 import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./logger.js";
 import { DiscordBot } from "./discord/client.js";
@@ -81,6 +88,25 @@ const manualReviewSummaryMarkers = new Set<string>();
 // Key: Discord message id (the bot's reply message that contains the briefing)
 // Value: numeric item id when saved, or 'saving' when an ingestion is in progress
 const saveBriefingCache = new Map<string, number | "saving">();
+
+function isChatInputInteraction(
+  interaction: Interaction
+): interaction is ChatInputCommandInteraction {
+  const maybe = interaction as unknown as {
+    isChatInputCommand?: () => boolean;
+    isCommand?: () => boolean;
+  };
+
+  if (typeof maybe.isChatInputCommand === "function") {
+    return maybe.isChatInputCommand();
+  }
+
+  if (typeof maybe.isCommand === "function") {
+    return maybe.isCommand();
+  }
+
+  return false;
+}
 
 function getSummaryMarker(url: string, itemId?: number): string {
   return itemId !== undefined ? `item:${itemId}` : `url:${url}`;
@@ -925,7 +951,7 @@ async function suppressEmbedsIfPermitted(message: Message): Promise<boolean> {
       return false;
     }
 
-    if (!botMember.permissions.has("MANAGE_MESSAGES")) {
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageMessages)) {
       logger.warn("Bot lacks MANAGE_MESSAGES permission; cannot suppress embeds", { messageId: message.id });
       return false;
     }
@@ -1173,7 +1199,7 @@ function renderBriefingFromJson(jsonOut: any): string {
 }
 
 async function editReplyWithPossibleAttachment(
-  interaction: CommandInteraction,
+  interaction: ChatInputCommandInteraction,
   headerLine: string,
   content: string,
   filename = "content.md",
@@ -1385,8 +1411,8 @@ const bot = new DiscordBot({
         if (interaction.isButton && interaction.isButton()) {
           const btn = interaction as ButtonInteraction;
           await btn.reply({ content: "An unexpected error occurred while handling the Save briefing action.", ephemeral: true });
-        } else if (interaction.isCommand && interaction.isCommand()) {
-          const cmdErr = interaction as CommandInteraction;
+        } else if (isChatInputInteraction(interaction)) {
+          const cmdErr = interaction as ChatInputCommandInteraction;
           await cmdErr.reply({ content: "An unexpected error occurred while handling the Save briefing action.", ephemeral: true });
         } else {
           // Best-effort fallback for unknown interaction shapes (tests may use plain objects)
@@ -1404,9 +1430,9 @@ const bot = new DiscordBot({
     }
 
     // If not a button, handle command interactions
-    if (!interaction.isCommand || !interaction.isCommand()) return;
+    if (!isChatInputInteraction(interaction)) return;
 
-    const cmd = interaction as CommandInteraction;
+    const cmd = interaction as ChatInputCommandInteraction;
     const commandName = cmd.commandName;
 
     // Handle simple stats command

@@ -16,3 +16,9 @@ Notes
 -----
 - The shim is invoked automatically when `OB_CLI_PATH` points at the shim file (the runner will spawn Node for `.js` paths).
 - The integration tests are intentionally small and hermetic; they do not require the real `ob` binary.
+
+Dependency note
+---------------
+- The bot now uses `discord.js` v14, which removes the legacy transitive path
+  that previously pulled in `tr46@0.0.3` and triggered Node.js `DEP0040`
+  (`punycode`) startup warnings.

@@ -306,7 +306,7 @@ describe("LifecycleManager", () => {
   });
 
   describe("shutdown callbacks", () => {
-    let mockExit: ReturnType<typeof vi.spyOn>;
+    let mockExit: { mockRestore: () => void };
 
     beforeEach(() => {
       // Mock process.exit to prevent tests from exiting
@@ -373,7 +373,7 @@ describe("LifecycleManager", () => {
   });
 
   describe("graceful shutdown", () => {
-    let mockExit: ReturnType<typeof vi.spyOn>;
+    let mockExit: { mockRestore: () => void };
 
     beforeEach(() => {
       // Mock process.exit to prevent tests from exiting

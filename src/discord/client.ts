@@ -1,4 +1,10 @@
-import { Client, Intents, Message, Interaction, CommandInteraction } from "discord.js";
+import {
+  ApplicationCommandOptionType,
+  Client,
+  GatewayIntentBits,
+  type Interaction,
+  type Message,
+} from "discord.js";
 
 import type { Logger } from "../logger.js";
 
@@ -14,11 +20,18 @@ export interface DiscordBotOptions {
 }
 
 export class DiscordBot {
-  private readonly client: Client;
+  readonly client: Client;
 
   constructor(private readonly options: DiscordBotOptions) {
+    // discord.js v14 uses GatewayIntentBits (v13 used Intents.FLAGS).
+    // Staying on v14 also removes the legacy transitive dependency path that
+    // emitted Node DEP0040 punycode deprecation warnings at startup.
     this.client = new Client({
-      intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES, Intents.FLAGS.MESSAGE_CONTENT]
+      intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+      ]
     });
   }
 
@@ -73,7 +86,7 @@ export class DiscordBot {
       });
 
       // Register the search command
-      // Option types use Discord API numeric values (3 = STRING, 4 = INTEGER)
+      // Keep explicit option enums for v14 compatibility and readability.
       await guild.commands.create({
         name: "search",
         description: "Search OpenBrain for relevant items",
@@ -81,13 +94,13 @@ export class DiscordBot {
           {
             name: "query",
             description: "Search query text",
-            type: 3, // STRING
+            type: ApplicationCommandOptionType.String,
             required: true,
           },
           {
             name: "limit",
             description: "Maximum number of results to return (1-20)",
-            type: 4, // INTEGER
+            type: ApplicationCommandOptionType.Integer,
             required: false,
           },
         ],
@@ -101,13 +114,13 @@ export class DiscordBot {
           {
             name: "query",
             description: "Query or URL to generate a briefing for",
-            type: 3, // STRING
+            type: ApplicationCommandOptionType.String,
             required: true,
           },
           {
             name: "k",
             description: "Number of items to include in briefing (1-50)",
-            type: 4, // INTEGER
+            type: ApplicationCommandOptionType.Integer,
             required: false,
             minValue: 1,
             maxValue: 50,
@@ -123,7 +136,7 @@ export class DiscordBot {
           {
             name: "limit",
             description: "Maximum number of recent items to return (1-100)",
-            type: 4, // INTEGER
+            type: ApplicationCommandOptionType.Integer,
             required: false,
             minValue: 1,
             maxValue: 100,

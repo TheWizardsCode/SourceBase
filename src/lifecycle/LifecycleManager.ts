@@ -1,5 +1,5 @@
 import type { Logger } from "../logger.js";
-import type { Client } from "discord.js";
+import type { Client, Message } from "discord.js";
 
 /**
  * Interface for startup notification configuration
@@ -418,7 +418,9 @@ export class LifecycleManager {
           try {
             const channel = await this.client.channels.fetch(state.channelId);
             if (channel && "messages" in channel) {
-              const messages = channel.messages as { fetch: (id: string) => Promise<{ delete: () => Promise<void> } | null> };
+              const messages = channel.messages as unknown as {
+                fetch: (id: string) => Promise<Message | null>;
+              };
               const message = await messages.fetch(state.messageId);
               if (message && "delete" in message) {
                 await message.delete();

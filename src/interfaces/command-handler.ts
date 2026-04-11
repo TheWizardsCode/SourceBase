@@ -1,9 +1,9 @@
-import type { CommandInteraction, Message } from "discord.js";
+import type { ChatInputCommandInteraction, Message } from "discord.js";
 
 export interface MessageCommandHandler {
   handleMessage(message: Message): Promise<boolean>;
 }
 
 export interface SlashCommandHandler {
-  handleCommand(command: CommandInteraction): Promise<boolean>;
+  handleCommand(command: ChatInputCommandInteraction): Promise<boolean>;
 }

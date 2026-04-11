@@ -1,4 +1,4 @@
-import type { CommandInteraction } from "discord.js";
+import type { ChatInputCommandInteraction } from "discord.js";
 import { runCliCommand, CliRunnerError } from "../bot/cli-runner.js";
 import type { SlashCommandHandler } from "../interfaces/command-handler.js";
 
@@ -18,7 +18,7 @@ export class RecentCommandHandler implements SlashCommandHandler {
     this.errorMessage = dependencies.errorMessage ?? DEFAULT_ERROR_MESSAGE;
   }
 
-  async handleCommand(command: CommandInteraction): Promise<boolean> {
+  async handleCommand(command: ChatInputCommandInteraction): Promise<boolean> {
     if (command.commandName !== "recent") return false;
 
     await command.deferReply();

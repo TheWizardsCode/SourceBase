@@ -7,6 +7,18 @@ export interface ShutdownController {
 export function createShutdownController(logger: Logger): ShutdownController {
   let shuttingDown = false;
 
+  // Use a shared symbol on the process object to ensure we only register
+  // signal handlers once across the whole process. Tests may create many
+  // controllers which would otherwise add multiple listeners and trigger
+  // EventEmitter max listeners warnings.
+  const SIGNAL_HANDLERS_KEY = Symbol.for("SourceBase.signalHandlersInstalled");
+  if ((process as any)[SIGNAL_HANDLERS_KEY]) {
+    return {
+      isShuttingDown: () => shuttingDown,
+    };
+  }
+  (process as any)[SIGNAL_HANDLERS_KEY] = true;
+
   const gracefulShutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) {
       logger.info("Shutdown already in progress, forcing exit");

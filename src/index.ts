@@ -33,6 +33,7 @@ import {
   type AddResult,
 } from "./bot/cli-runner.js";
 import { pathToFileURL } from "url";
+import { extractUrls as sharedExtractUrls } from "./url.js";
 
 // ============================================================================
 // Logger
@@ -445,14 +446,8 @@ async function checkCliAvailability(message: Message): Promise<boolean> {
 // URL Processing
 // ============================================================================
 
-/**
- * Extract URLs from message content
- */
-function extractUrls(content: string): string[] {
-  const urlRegex = /https?:\/\/[^\s<>"{}|\\^`[\]]+/gi;
-  const matches = content.match(urlRegex) || [];
-  return [...new Set(matches)]; // Remove duplicates
-}
+// Legacy local URL extractor removed. Use shared `extractUrls` from
+// src/url.ts (imported above as `sharedExtractUrls`).
 
 /**
  * Process a URL with threaded progress updates
@@ -2142,8 +2137,8 @@ const bot = new DiscordBot({
       return;
     }
 
-    // Extract URLs from message
-    const urls = extractUrls(message.content);
+    // Extract URLs from message using shared utility
+    const urls = sharedExtractUrls(message.content);
     if (urls.length > 0) {
       logger.info("Found URLs in message", { urls, messageId: message.id });
 

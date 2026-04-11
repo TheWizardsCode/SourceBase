@@ -33,6 +33,7 @@
 import { spawn, type ChildProcess } from "child_process";
 import { createInterface } from "readline";
 import path from "path";
+import { normalizeUrl } from "../url.js";
 
 // ============================================================================
 // Type Definitions
@@ -611,6 +612,12 @@ export async function runQueueCommand(
   url: string,
   options: RunnerOptions = {}
 ): Promise<QueueResult> {
+  // Ensure URL is normalized before queueing to keep behaviour consistent
+  try {
+    url = normalizeUrl(url);
+  } catch {
+    // Defensive: if normalization fails, fall back to the raw URL
+  }
   const { stdoutIterator, exitPromise } = runCliSubprocess(
     "queue",
     [url],

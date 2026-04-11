@@ -1,5 +1,6 @@
 import type { Message } from "discord.js";
 import { runQueueCommand, type QueueResult } from "../bot/cli-runner.js";
+import { normalizeUrl } from "../url.js";
 import type { MessageCommandHandler } from "../interfaces/command-handler.js";
 
 export interface CrawlCommandParseResult {
@@ -27,11 +28,19 @@ export class CrawlCommandHandler implements MessageCommandHandler {
       };
     }
 
-    const match = content.match(/^\s*crawl\s+(https?:\/\/[^\s]+)/i);
-    return {
-      isCrawlCommand: true,
-      seedUrl: match ? match[1] : null,
-    };
+    // Capture the token after the 'crawl' keyword and normalize it using
+    // the shared URL utilities so punctuation and edge cases are handled
+    // consistently with other ingestion paths.
+    const match = content.match(/^\s*crawl\s+(\S+)/i);
+    if (!match) {
+      return { isCrawlCommand: true, seedUrl: null };
+    }
+
+    const raw = match[1];
+    // Use the shared normalizer. It's conservative and will return a cleaned
+    // string even when parsing fails.
+    const normalized = normalizeUrl(raw);
+    return { isCrawlCommand: true, seedUrl: normalized };
   }
 
   async queueSeed(message: Message, seedUrl: string): Promise<QueueResult> {

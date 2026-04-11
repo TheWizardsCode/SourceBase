@@ -133,7 +133,14 @@ export class LifecycleManager {
     this.shutdownConfig = { ...DEFAULT_SHUTDOWN_CONFIG, ...config.shutdownConfig };
     this.eventListeners = config.eventListeners ?? {};
 
-    this.setupSignalHandlers();
+    // Ensure signal handlers are only installed once per process. Tests may
+    // instantiate multiple LifecycleManager instances which would otherwise
+    // add duplicate process listeners and trigger max listener warnings.
+    const SIGNAL_HANDLERS_KEY = Symbol.for("SourceBase.signalHandlersInstalled");
+    if (!(process as any)[SIGNAL_HANDLERS_KEY]) {
+      (process as any)[SIGNAL_HANDLERS_KEY] = true;
+      this.setupSignalHandlers();
+    }
   }
 
   /**

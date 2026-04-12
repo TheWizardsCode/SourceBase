@@ -144,6 +144,48 @@ export class DiscordBot {
         ],
       });
 
+      // Register the add command
+      await guild.commands.create({
+        name: "add",
+        description: "Add a URL or raw text to OpenBrain (use a file:// URL for local files)",
+        options: [
+          {
+            name: "input",
+            description: "URL or text to add to OpenBrain",
+            type: ApplicationCommandOptionType.String,
+            required: true,
+          },
+        ],
+      });
+
+      // Register the show_summary command (human-readable summary)
+      await guild.commands.create({
+        name: "show_summary",
+        description: "Show a human-readable summary of an OpenBrain item by ID or URL",
+        options: [
+          {
+            name: "input",
+            description: "Item ID or URL to show",
+            type: ApplicationCommandOptionType.String,
+            required: true,
+          },
+        ],
+      });
+
+      // Register the show_full command (human-readable full output)
+      await guild.commands.create({
+        name: "show_full",
+        description: "Show the full human-readable output for an OpenBrain item (ob show <url> --full)",
+        options: [
+          {
+            name: "input",
+            description: "Item ID or URL to show",
+            type: ApplicationCommandOptionType.String,
+            required: true,
+          },
+        ],
+      });
+
       this.options.logger.info("Slash commands registered successfully");
     } catch (error) {
       this.options.logger.error("Failed to register slash commands", {

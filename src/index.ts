@@ -16,6 +16,8 @@ import { postCliErrorReport } from "./discord/cli-error-report.js";
 import { CrawlCommandHandler } from "./handlers/CrawlCommandHandler.js";
 import { StatsCommandHandler } from "./handlers/StatsCommandHandler.js";
 import { RecentCommandHandler } from "./handlers/RecentCommandHandler.js";
+import { AddCommandHandler } from "./handlers/AddCommandHandler.js";
+import { ShowCommandHandler } from "./handlers/ShowCommandHandler.js";
 import { LifecycleManager } from "./lifecycle/LifecycleManager.js";
 import {
   formatMissingCrawlSeedMessage,
@@ -43,6 +45,8 @@ const logger = new Logger(config.LOG_LEVEL as any);
 const crawlCommandHandler = new CrawlCommandHandler();
 const statsCommandHandler = new StatsCommandHandler();
 const recentCommandHandler = new RecentCommandHandler();
+const addCommandHandler = new AddCommandHandler();
+const showCommandHandler = new ShowCommandHandler();
 // QueuePresenter manages lifecycle of short-lived queue status messages
 const queuePresenter = new QueuePresenter(logger);
 
@@ -1437,6 +1441,16 @@ const bot = new DiscordBot({
 
     // Handle /recent
     if (await recentCommandHandler.handleCommand(cmd)) {
+      return;
+    }
+
+    // Handle /add
+    if (await addCommandHandler.handleCommand(cmd)) {
+      return;
+    }
+
+    // Handle /show
+    if (await showCommandHandler.handleCommand(cmd)) {
       return;
     }
 

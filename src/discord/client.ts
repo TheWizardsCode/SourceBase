@@ -39,15 +39,23 @@ export class DiscordBot {
     return this.client;
   }
 
-  async start(): Promise<void> {
-    this.client.once("ready", async (client) => {
-      this.options.logger.info("Discord bot connected", {
-        userTag: client.user.tag,
-        monitoredChannelId: this.options.monitoredChannelId
-      });
+  private startupDone = false;
 
-      // Register slash commands
-      await this.registerSlashCommands();
+  private handleReady(client: any): void {
+    if (this.startupDone) return;
+    this.startupDone = true;
+
+    this.options.logger.info("Discord bot connected", {
+      userTag: client.user.tag,
+      monitoredChannelId: this.options.monitoredChannelId
+    });
+
+    this.registerSlashCommands();
+  }
+
+  async start(): Promise<void> {
+    this.client.once("clientReady", (client) => {
+      this.handleReady(client);
     });
 
     this.client.on("messageCreate", async (message) => {

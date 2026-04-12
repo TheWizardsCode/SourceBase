@@ -4,10 +4,7 @@ import { StatsCommandHandler } from "../../src/handlers/StatsCommandHandler.js";
 describe("StatsCommandHandler", () => {
   it("handles /stats by querying stats and editing the deferred reply", async () => {
     const runStatsMock = vi.fn(async () => ({
-      totalLinks: 100,
-      processedCount: 80,
-      pendingCount: 15,
-      failedCount: 5,
+      raw: "Total links: 100\nProcessed: 80 (80.0%)\nPending: 15\nFailed: 5 (5.0%)",
     }));
 
     const handler = new StatsCommandHandler({
@@ -33,15 +30,7 @@ describe("StatsCommandHandler", () => {
       authorId: "user-1",
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
-      [
-        "📊 OpenBrain statistics",
-        "",
-        "**Totals**",
-        "- Total links: 100",
-        "- Processed: 80 (80.0%)",
-        "- Pending: 15",
-        "- Failed: 5 (5.0%)",
-      ].join("\n")
+      "```markdown\nTotal links: 100\nProcessed: 80 (80.0%)\nPending: 15\nFailed: 5 (5.0%)\n```"
     );
   });
 
@@ -74,10 +63,7 @@ describe("StatsCommandHandler", () => {
 
   it("returns false for non-stats command", async () => {
     const runStatsMock = vi.fn(async () => ({
-      totalLinks: 1,
-      processedCount: 1,
-      pendingCount: 0,
-      failedCount: 0,
+      raw: "Total links: 1\nProcessed: 1 (100.0%)\nPending: 0\nFailed: 0",
     }));
 
     const handler = new StatsCommandHandler({

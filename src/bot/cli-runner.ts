@@ -719,21 +719,16 @@ export async function runSummaryCommand(
  */
 export async function runStatsCommand(
   options: RunnerOptions = {}
-): Promise<any> {
+): Promise<{ raw: string }> {
   const { stdoutIterator, exitPromise } = runCliSubprocess(
     "stats",
-    ["--json"],
+    [],
     options
   );
 
-  let jsonOutput = "";
   const stdoutLines: string[] = [];
-
-  // Collect stdout lines (preserve them in case parsing fails so we can
-  // include the raw output in errors or fallbacks)
   for await (const line of stdoutIterator) {
     stdoutLines.push(line);
-    jsonOutput += line;
   }
 
   const { exitCode, stderr } = await exitPromise;
@@ -746,66 +741,7 @@ export async function runStatsCommand(
     );
   }
 
-  try {
-    // Helper: try parsing JSON from a candidate string. This is liberal
-    // because some CLI versions may emit the JSON on stderr or include
-    // additional logging around the JSON. We try the full string first,
-    // then attempt to extract a JSON object/array by finding matching
-    // braces/brackets.
-    const tryParseJson = (input: string): any | undefined => {
-      if (!input) return undefined;
-      const trimmed = input.trim();
-      if (!trimmed) return undefined;
-      try {
-        return JSON.parse(trimmed);
-      } catch {
-        // Try to find a JSON object substring
-        const firstBrace = trimmed.indexOf("{");
-        const lastBrace = trimmed.lastIndexOf("}");
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          const candidate = trimmed.slice(firstBrace, lastBrace + 1);
-          try {
-            return JSON.parse(candidate);
-          } catch {
-            // continue
-          }
-        }
-
-        // Try JSON array
-        const firstBracket = trimmed.indexOf("[");
-        const lastBracket = trimmed.lastIndexOf("]");
-        if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-          const candidate = trimmed.slice(firstBracket, lastBracket + 1);
-          try {
-            return JSON.parse(candidate);
-          } catch {
-            // continue
-          }
-        }
-
-        return undefined;
-      }
-    };
-
-    // Prefer stdout, but fall back to parsing stderr if the CLI wrote JSON there.
-    const parsedFromStdout = tryParseJson(jsonOutput);
-    if (parsedFromStdout !== undefined) return parsedFromStdout;
-
-    const parsedFromStderr = tryParseJson(stderr);
-    if (parsedFromStderr !== undefined) return parsedFromStderr;
-
-    // Nothing parseable
-  } catch (parseErr) {
-    // If parsing fails, throw a distinct error so callers (the Discord
-    // handlers) can provide a more helpful message to users rather than
-    // assuming the CLI binary itself is missing/unavailable.
-    const raw = stdoutLines.join("\n");
-    throw new StatsParseError(
-      "Failed to parse stats JSON output",
-      exitCode,
-      `${stderr}\n${raw}`
-    );
-  }
+  return { raw: stdoutLines.join("\n") };
 }
 
 /**

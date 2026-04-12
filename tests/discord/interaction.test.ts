@@ -108,10 +108,15 @@ describe("slash interaction handlers", () => {
 
   it("routes /stats through StatsCommandHandler", async () => {
     const runStatsCommandMock = vi.fn(async () => ({
-      totalLinks: 100,
-      processedCount: 80,
-      pendingCount: 15,
-      failedCount: 5,
+      raw: [
+        "📊 OpenBrain statistics",
+        "",
+        "**Totals**",
+        "- Total links: 100",
+        "- Processed: 80 (80.0%)",
+        "- Pending: 15",
+        "- Failed: 5 (5.0%)",
+      ].join("\n"),
     }));
 
     const handler = await loadInteractionHandler(async () => {
@@ -153,6 +158,7 @@ describe("slash interaction handlers", () => {
       authorId: "user-1",
     });
     expect(edits).toContain(
+      "```markdown\n" +
       [
         "📊 OpenBrain statistics",
         "",
@@ -161,7 +167,8 @@ describe("slash interaction handlers", () => {
         "- Processed: 80 (80.0%)",
         "- Pending: 15",
         "- Failed: 5 (5.0%)",
-      ].join("\n")
+      ].join("\n") +
+      "\n```"
     );
   });
 

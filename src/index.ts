@@ -7,7 +7,7 @@ import {
   type Message,
 } from "discord.js";
 import { botConfig as config } from "./config/bot.js";
-import { Logger } from "./logger.js";
+import { Logger } from "./log/index.js";
 import { DiscordBot } from "./discord/client.js";
 import { buildCliErrorReport } from "./discord/utils.js";
 import { isLikelyContentQuery } from "./query/detector.js";

@@ -6,7 +6,7 @@ import {
   type Message,
 } from "discord.js";
 
-import type { Logger } from "../logger.js";
+import type { Logger } from "../log/index.js";
 
 type MessageHandler = (message: Message) => Promise<void>;
 type InteractionHandler = (interaction: Interaction) => Promise<void>;

@@ -1,7 +1,7 @@
 import type { Message, ThreadChannel } from "discord.js";
 import type { AddProgressEvent } from "../bot/cli-runner.js";
 import { formatProgressMessage } from "../formatters/progress.js";
-import type { Logger } from "../logger.js";
+import type { Logger } from "../log/index.js";
 
 /**
  * Manages Discord status message lifecycle for CLI progress events.

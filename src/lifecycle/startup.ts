@@ -1,4 +1,4 @@
-import type { Logger } from "../logger.js";
+import type { Logger } from "../log/index.js";
 
 export async function startBot(start: () => Promise<void>, logger: Logger): Promise<void> {
   try {

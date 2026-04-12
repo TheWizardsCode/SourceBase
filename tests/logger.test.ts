@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Logger } from "../src/logger.js";
+import { Logger } from "../src/log/index.js";
 
 describe("Logger", () => {
   it("logs info records when level is info", () => {

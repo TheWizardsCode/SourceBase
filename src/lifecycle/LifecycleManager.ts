@@ -1,4 +1,4 @@
-import type { Logger } from "../logger.js";
+import type { Logger } from "../log/index.js";
 import type { Client, Message } from "discord.js";
 
 /**

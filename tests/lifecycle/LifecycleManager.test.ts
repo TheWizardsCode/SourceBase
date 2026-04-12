@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { LifecycleManager, type LifecycleManagerConfig } from "../../src/lifecycle/LifecycleManager.js";
-import type { Logger } from "../../src/logger.js";
+import type { Logger } from "../../src/log/index.js";
 import type { Client, Channel, TextChannel } from "discord.js";
 
 describe("LifecycleManager", () => {

@@ -306,8 +306,11 @@ export class LifecycleManager {
 
     try {
       // Status message restoration logic would go here
-      // This would typically load state from persistent storage
-      // and reconnect to any active status messages
+      // Example (best-effort): load persisted queue status payloads and
+      // attempt to rehydrate them to real targets using a transport adapter.
+      // The adapter is intentionally optional to avoid hard runtime coupling
+      // here; consumers of LifecycleManager can call the adapter when they
+      // have access to a Discord client.
       
       this.logger.info("Status message restoration completed", {
         restoredCount: this.statusMessages.size,

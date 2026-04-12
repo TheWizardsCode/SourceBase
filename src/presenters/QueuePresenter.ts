@@ -10,6 +10,10 @@ import type { Logger } from "../logger.js";
  */
 export class QueuePresenter {
   // Map key -> posted Discord message object
+  // Map key -> posted Discord message object or lightweight transport payload
+  // We intentionally allow storing either the full Message (runtime) or a
+  // transport payload (persisted/minimal shape) to avoid unsafe casting of
+  // synthetic objects to the discord.js Message type.
   private readonly queueStatusMessages: Map<string, any> = new Map();
 
   // Lightweight cache for channel-scoped values (e.g., last known queue position)
@@ -49,10 +53,24 @@ export class QueuePresenter {
   private async postToTarget(target: any, body: string): Promise<any> {
     if (!target) return undefined;
     try {
+      // If target is a real runtime object with send/reply, use it.
       if (typeof target.send === "function") return await target.send(body);
       if (typeof target.reply === "function") return await target.reply(body);
-      // Fallback: if a channel is provided
+      // Fallback: if a channel-like object is provided
       if (target.channel && typeof target.channel.send === "function") return await target.channel.send(body);
+
+      // If the caller provided a lightweight transport payload (for example
+      // something persisted from a previous run) we must NOT attempt to cast
+      // it to a discord.js Message. Instead, store the payload as-is and
+      // treat posting as a no-op. Callers that have runtime access to the
+      // Discord client should adapt the payload to a real target and call
+      // createOrUpdateStatus with that runtime object. This preserves safety
+      // boundaries between persistence and transport.
+      if (target && (target.channelId || target.messageId || target.authorId)) {
+        this.logger?.debug?.("QueuePresenter.postToTarget: received transport payload; deferring actual posting", { payload: target });
+        // Return the payload so it can be stored in the internal map.
+        return target;
+      }
     } catch (err) {
       this.logger?.warn?.("QueuePresenter.postToTarget failed", { error: err instanceof Error ? err.message : String(err) });
     }
@@ -139,6 +157,16 @@ export class QueuePresenter {
 }
 
 export default QueuePresenter;
+
+/**
+ * Minimal transport payload representing persisted queue context.
+ * This is intentionally small and independent of discord.js runtime types.
+ */
+export interface QueueTransportPayload {
+  channelId?: string;
+  messageId?: string;
+  authorId?: string;
+}
 
 // Backwards-compatible formatting helpers moved from presenters/queue.ts
 export function formatMissingCrawlSeedMessage(): string {

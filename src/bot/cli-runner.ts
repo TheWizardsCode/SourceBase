@@ -73,6 +73,10 @@ export interface ContextFlags {
  * Runner configuration options
  */
 export interface RunnerOptions extends ContextFlags {
+  // RunnerOptions may also accept a transport payload directly. We keep the
+  // ContextFlags fields for convenience and backwards compatibility, but
+  // allow callers to pass a minimal QueueTransportPayload as the options
+  // object when queueing from runtime code.
   /** Working directory for subprocess */
   cwd?: string;
   /** Additional environment variables */

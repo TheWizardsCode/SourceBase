@@ -1,4 +1,5 @@
 import type { Message } from "discord.js";
+import type { QueueTransportPayload } from "../presenters/QueuePresenter.js";
 import { runQueueCommand, type QueueResult } from "../bot/cli-runner.js";
 import { normalizeUrl } from "../url.js";
 import type { MessageCommandHandler } from "../interfaces/command-handler.js";
@@ -44,11 +45,16 @@ export class CrawlCommandHandler implements MessageCommandHandler {
   }
 
   async queueSeed(message: Message, seedUrl: string): Promise<QueueResult> {
-    return this.queue(seedUrl, {
+    const payload: QueueTransportPayload = {
       channelId: message.channelId,
       messageId: message.id,
       authorId: message.author.id,
-    });
+    };
+
+    // Prefer passing an explicit transport payload to the runner so that
+    // any persistence or rehydration paths use a safe, minimal shape rather
+    // than relying on synthetic Message casting.
+    return this.queue(seedUrl, payload as any);
   }
 
   async handleMessage(message: Message): Promise<boolean> {

@@ -1,3 +1,5 @@
+import pino from "pino";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const logLevelOrder: Record<LogLevel, number> = {
@@ -7,8 +9,26 @@ const logLevelOrder: Record<LogLevel, number> = {
   error: 40
 };
 
+function envLogLevel(defaultLevel: LogLevel = "info"): LogLevel {
+  const env = (process.env.LOG_LEVEL || "").toLowerCase();
+  if (env === "debug" || env === "info" || env === "warn" || env === "error") {
+    return env as LogLevel;
+  }
+  return defaultLevel;
+}
+
+// Create a root pino instance. In development enable pretty printing.
+const isDev = process.env.NODE_ENV !== "production";
+const transport = isDev
+  ? { target: "pino-pretty", options: { colorize: true, translateTime: "SYS:standard" } }
+  : undefined;
+
+const pinoLogger = pino({
+  level: envLogLevel("info")
+}, transport ? pino.transport(transport as any) : undefined);
+
 export class Logger {
-  constructor(private readonly level: LogLevel = "info") {}
+  constructor(private readonly level: LogLevel = envLogLevel("info")) {}
 
   private shouldLog(level: LogLevel): boolean {
     return logLevelOrder[level] >= logLevelOrder[this.level];
@@ -35,11 +55,23 @@ export class Logger {
       return;
     }
 
-    const record = {
-      level,
-      message,
-      ...(meta ? { meta } : {})
-    };
+    // Use pino to emit structured logs.
+    try {
+      const fn = (pinoLogger as any)[level];
+      if (meta !== undefined) {
+        fn.call(pinoLogger, { meta }, message);
+      } else {
+        fn.call(pinoLogger, message);
+      }
+    } catch (e) {
+      // If pino isn't available for some reason, fall back to console below.
+    }
+
+    // Preserve previous behaviour for consumers and tests: write JSON to console.
+    const record: Record<string, unknown> = { level, message };
+    if (meta !== undefined) {
+      record.meta = meta;
+    }
 
     if (level === "error") {
       console.error(JSON.stringify(record));

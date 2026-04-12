@@ -340,36 +340,93 @@ async function sendGeneratedSummary(
     return;
   }
 
-  const summaryMessage = formatSummaryMessage({
+  const itemLink = buildOpenBrainItemLink(addResult.id, addResult.url);
+  const fullText = formatSummaryMessage({
     summary: summaryResult.summary,
     itemId: addResult.id,
     sourceUrl: addResult.url,
     authorId: message.author.id,
     timestamp: addResult.timestamp,
-    itemLink: buildOpenBrainItemLink(addResult.id, addResult.url),
+    itemLink,
   });
 
+  // Decide whether to attach the full summary as a file or send inline.
+  const isTooLong = fullText.length > DISCORD_CONTENT_LIMIT;
+
+  // Build a compact snippet to use in messages when the full text is too long.
+  const snippet = isTooLong
+    ? extractSummaryFromMarkdown(fullText, Math.max(200, DISCORD_CONTENT_LIMIT - 300))
+    : fullText;
+
+  const metadata = [
+    `OpenBrain item: <${itemLink}>`,
+    `Source URL: <${addResult.url}>`,
+    `Item ID: ${addResult.id !== undefined ? addResult.id : "unknown"}`,
+    `Author: <@${message.author.id}>`,
+    `Timestamp: ${addResult.timestamp || new Date().toISOString()}`,
+  ].join("\n");
+
+  const snippetMessage = ["🧾 OpenBrain summary", "", snippet, "", metadata].join("\n");
+
+  let anyPosted = false;
+
+  // Prepare attachment for long summaries so it can be used for both reply
+  // and thread targets. We build the file buffer regardless but only attach
+  // it when needed.
+  const filename = `openbrain-summary-${addResult.id ?? "unknown"}.md`;
+  const file = { attachment: Buffer.from(fullText, "utf8"), name: filename };
+
+  // Attempt to post a reply to the original message (always attempt)
   try {
-    await target.send(summaryMessage);
+    // If not too long, send full text in reply; otherwise send snippet and attach file.
+    if (!isTooLong) {
+      await message.reply(fullText as any);
+    } else {
+      await message.reply({ content: snippetMessage, files: [file] } as any);
+    }
+    anyPosted = true;
+  } catch (err) {
+    logger.warn("Failed to send summary as a reply", {
+      messageId: message.id,
+      url: addResult.url,
+      itemId: addResult.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Attempt to post to the resolved target (thread preferred or fallback).
+  try {
+    if (!isTooLong) {
+      // send full text inline
+      await (target as any).send(fullText);
+    } else {
+      // attach full content as a markdown file and include snippet in message
+      await (target as any).send({ content: snippetMessage, files: [file] });
+    }
+    anyPosted = true;
+  } catch (err) {
+    logger.error("Failed to post generated summary to target", {
+      messageId: message.id,
+      targetId: target.id,
+      url: addResult.url,
+      itemId: addResult.id,
+      marker,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  if (anyPosted) {
     postedSummaryMarkers.add(marker);
     manualReviewSummaryMarkers.delete(marker);
-
-    logger.info("Posted generated summary to Discord", {
+    logger.info("Posted generated summary to Discord (reply and/or target)", {
       messageId: message.id,
       targetId: target.id,
       url: addResult.url,
       itemId: addResult.id,
       marker,
     });
-  } catch (error) {
-    logger.error("Failed to post generated summary", {
-      messageId: message.id,
-      targetId: target.id,
-      url: addResult.url,
-      itemId: addResult.id,
-      marker,
-      error: error instanceof Error ? error.message : String(error),
-    });
+  } else {
+    logger.warn("Did not post generated summary to any destination", { messageId: message.id, url: addResult.url, itemId: addResult.id, marker });
   }
 }
 

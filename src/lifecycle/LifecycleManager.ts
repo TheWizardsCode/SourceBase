@@ -79,6 +79,10 @@ export interface LifecycleManagerConfig {
   shutdownConfig?: Partial<ShutdownConfig>;
   /** Event listeners */
   eventListeners?: LifecycleEventListeners;
+  /** Optional cleanup callback invoked on shutdown (minimal integration point) */
+  cleanupCallback?: () => void | Promise<void>;
+  /** Optional QueuePresenter-like object whose clearAll() will be invoked on shutdown */
+  queuePresenter?: { clearAll: () => void | Promise<void> };
 }
 
 /**
@@ -132,6 +136,18 @@ export class LifecycleManager {
     this.startupNotification = config.startupNotification;
     this.shutdownConfig = { ...DEFAULT_SHUTDOWN_CONFIG, ...config.shutdownConfig };
     this.eventListeners = config.eventListeners ?? {};
+
+    // If the caller provided a cleanup callback or a QueuePresenter-like
+    // instance, register it to be executed as part of shutdown callbacks.
+    if (config.cleanupCallback) {
+      this.onShutdown(config.cleanupCallback);
+    }
+
+    if (config.queuePresenter && typeof config.queuePresenter.clearAll === "function") {
+      // Wrap in a function to ensure any returned promise is awaited by the
+      // shutdown sequence.
+      this.onShutdown(() => config.queuePresenter!.clearAll());
+    }
 
     // Ensure signal handlers are only installed once per process. Tests may
     // instantiate multiple LifecycleManager instances which would otherwise

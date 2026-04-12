@@ -1,4 +1,5 @@
 import type { AddProgressEvent } from "../bot/cli-runner.js";
+import { truncate } from "../presenters/discordFormatting.js";
 
 export function formatProgressMessage(event: AddProgressEvent): string {
   const phase = typeof event.phase === "string" && event.phase.trim() !== "" ? event.phase : undefined;
@@ -6,7 +7,7 @@ export function formatProgressMessage(event: AddProgressEvent): string {
   if (!phase) {
     if (event.message) {
       const m = String(event.message).trim();
-      const truncated = m.length > 1500 ? `${m.slice(0, 1500)}...` : m;
+      const truncated = truncate(m, 1500);
       if (event.title) return `❌ ${truncated} (${event.title})`;
       if (event.url) return `❌ ${truncated} (<${event.url}>)`;
       return `❌ ${truncated}`;
@@ -40,7 +41,7 @@ export function formatProgressMessage(event: AddProgressEvent): string {
       const base = `⏳ Processing: ${phase}`;
       if (event.message) {
         const m = String(event.message).trim();
-        const truncated = m.length > 1200 ? `${m.slice(0, 1200)}...` : m;
+        const truncated = truncate(m, 1200);
         return `${base}\n\n${truncated}`;
       }
       return base;

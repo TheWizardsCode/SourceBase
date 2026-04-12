@@ -1,5 +1,6 @@
 import type { ChatInputCommandInteraction } from "discord.js";
 import { runCliCommand, CliRunnerError } from "../bot/cli-runner.js";
+import { DISCORD_CONTENT_LIMIT, truncate } from "../presenters/discordFormatting.js";
 import type { SlashCommandHandler } from "../interfaces/command-handler.js";
 
 const DEFAULT_ERROR_MESSAGE = "❌ Failed to show OpenBrain item. Please try again.";
@@ -50,12 +51,13 @@ export class ShowCommandHandler implements SlashCommandHandler {
       const stdoutText = result.stdout.join("\n").trim();
 
       // Treat output as human-readable text. If it's short, send inline; if
-      // large, attach as a file.
-      if (stdoutText.length <= 1900) {
+      // large, attach as a file. Use centralized content limit.
+      if (stdoutText.length <= DISCORD_CONTENT_LIMIT) {
         await command.editReply(stdoutText);
       } else {
         const file = { attachment: Buffer.from(stdoutText, "utf8"), name: `show-${Date.now()}.txt` } as any;
-        await command.editReply({ content: "Output attached as file:", files: [file] } as any);
+        const preview = truncate(stdoutText, 500);
+        await command.editReply({ content: `Output attached as file:\n\n${preview}\n\n*(Full output attached)*`, files: [file] } as any);
       }
 
       return true;

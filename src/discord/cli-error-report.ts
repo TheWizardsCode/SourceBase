@@ -1,4 +1,4 @@
-const DISCORD_CONTENT_LIMIT = 1900;
+import { DISCORD_CONTENT_LIMIT, truncate } from "../presenters/discordFormatting.js";
 
 export async function postCliErrorReport(target: any, report: string, shortIntro?: string): Promise<void> {
   try {
@@ -30,10 +30,11 @@ export async function postCliErrorReport(target: any, report: string, shortIntro
     }
   } catch {
     try {
-      const truncated = report.slice(0, Math.max(0, DISCORD_CONTENT_LIMIT - 50)) + "...";
+      const truncated = truncate(report, Math.max(0, DISCORD_CONTENT_LIMIT - 50));
       if (typeof target.send === "function") await target.send(truncated);
       else if (typeof target.reply === "function") await target.reply(truncated);
     } catch {
+      // ignore
     }
   }
 }

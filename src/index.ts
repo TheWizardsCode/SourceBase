@@ -13,6 +13,13 @@ import { buildCliErrorReport } from "./discord/utils.js";
 import { isLikelyContentQuery } from "./query/detector.js";
 import { formatProgressMessage } from "./formatters/progress.js";
 import { postCliErrorReport } from "./discord/cli-error-report.js";
+import {
+  DISCORD_CONTENT_LIMIT,
+  extractSummaryFromMarkdown as sharedExtractSummaryFromMarkdown,
+  wrapMarkdownText as sharedWrapMarkdownText,
+  renderBriefingFromJson as sharedRenderBriefingFromJson,
+  MARKDOWN_WRAP_WIDTH,
+} from "./presenters/discordFormatting.js";
 import { CrawlCommandHandler } from "./handlers/CrawlCommandHandler.js";
 import { StatsCommandHandler } from "./handlers/StatsCommandHandler.js";
 import { RecentCommandHandler } from "./handlers/RecentCommandHandler.js";
@@ -355,7 +362,7 @@ async function sendGeneratedSummary(
 
   // Build a compact snippet to use in messages when the full text is too long.
   const snippet = isTooLong
-    ? extractSummaryFromMarkdown(fullText, Math.max(200, DISCORD_CONTENT_LIMIT - 300))
+    ? sharedExtractSummaryFromMarkdown(fullText, Math.max(200, DISCORD_CONTENT_LIMIT - 300))
     : fullText;
 
   const metadata = [
@@ -1032,133 +1039,8 @@ async function suppressEmbedsIfPermitted(message: Message): Promise<boolean> {
 // Reply helper: summarize and attach large content
 // ==========================================================================
 
-const DISCORD_CONTENT_LIMIT = 1900;
-const MARKDOWN_WRAP_WIDTH = 80;
-
-function wrapLineAtNearestSpace(line: string, width: number): string[] {
-  if (line.length <= width || width <= 0) {
-    return [line];
-  }
-
-  const bulletMatch = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
-  const quoteMatch = line.match(/^(\s*>+\s*)(.*)$/);
-  const leadingWhitespace = line.match(/^\s*/)?.[0] ?? "";
-
-  let firstPrefix = leadingWhitespace;
-  let continuationPrefix = leadingWhitespace;
-  let remaining = line.slice(leadingWhitespace.length);
-
-  if (bulletMatch) {
-    const indent = bulletMatch[1];
-    const marker = bulletMatch[2];
-    firstPrefix = `${indent}${marker} `;
-    continuationPrefix = `${indent}${" ".repeat(marker.length + 1)}`;
-    remaining = bulletMatch[3];
-  } else if (quoteMatch) {
-    firstPrefix = quoteMatch[1];
-    continuationPrefix = quoteMatch[1];
-    remaining = quoteMatch[2];
-  }
-
-  const wrapped: string[] = [];
-  let isFirstLine = true;
-
-  while (remaining.length > 0) {
-    const prefix = isFirstLine ? firstPrefix : continuationPrefix;
-    const available = width - prefix.length;
-    if (available <= 0) {
-      wrapped.push(`${prefix}${remaining}`);
-      break;
-    }
-
-    if (remaining.length <= available) {
-      wrapped.push(`${prefix}${remaining}`);
-      break;
-    }
-
-    let splitIndex = remaining.lastIndexOf(" ", available);
-    if (splitIndex <= 0) {
-      splitIndex = remaining.indexOf(" ", available);
-      if (splitIndex === -1) {
-        wrapped.push(`${prefix}${remaining}`);
-        break;
-      }
-    }
-
-    const chunk = remaining.slice(0, splitIndex).trimEnd();
-    wrapped.push(`${prefix}${chunk}`);
-    remaining = remaining.slice(splitIndex).trimStart();
-    isFirstLine = false;
-  }
-
-  return wrapped.length > 0 ? wrapped : [line];
-}
-
-function wrapMarkdownText(content: string, width = MARKDOWN_WRAP_WIDTH): string {
-  const lines = content.split("\n");
-  const wrapped: string[] = [];
-  let inFencedCodeBlock = false;
-
-  for (const line of lines) {
-    const trimmed = line.trimStart();
-    if (trimmed.startsWith("```")) {
-      inFencedCodeBlock = !inFencedCodeBlock;
-      wrapped.push(line);
-      continue;
-    }
-
-    if (
-      inFencedCodeBlock ||
-      line.length <= width ||
-      /^\s*\|/.test(line) ||
-      /^\s*\[[^\]]+\]:\s+\S+/.test(line)
-    ) {
-      wrapped.push(line);
-      continue;
-    }
-
-    wrapped.push(...wrapLineAtNearestSpace(line, width));
-  }
-
-  return wrapped.join("\n");
-}
-
-function extractSummaryFromMarkdown(content: string, maxLen = 1500): string {
-  // Try to extract a '## Summary' section (case-insensitive)
-  try {
-    const summaryRegex = /(^|\n)#{1,6}\s*summary\s*\n([\s\S]*?)(?=\n#{1,6}\s*\S|\n---|$)/i;
-    const m = content.match(summaryRegex);
-    if (m && m[2]) {
-      let s = m[2].trim();
-      if (s.length > maxLen) s = s.slice(0, maxLen).trim();
-      // Attempt to end at a sentence boundary
-      const lastPeriod = s.lastIndexOf('. ');
-      if (lastPeriod > Math.floor(maxLen / 2)) s = s.slice(0, lastPeriod + 1);
-      return s;
-    }
-  } catch {
-    // ignore regex engine issues
-  }
-
-  // Fallback: use the first paragraph
-  const paragraphs = content.split(/\n\s*\n/);
-  let first = (paragraphs[0] || '').trim();
-  if (!first && paragraphs.length > 1) first = (paragraphs[1] || '').trim();
-  if (first) {
-    if (first.length <= maxLen) return first;
-    // Truncate to a sentence boundary if possible
-    const truncated = first.slice(0, maxLen);
-    const lastPeriod = truncated.lastIndexOf('. ');
-    if (lastPeriod > 0) return truncated.slice(0, lastPeriod + 1);
-    return truncated;
-  }
-
-  // Final fallback: truncate to maxLen and end at last sentence
-  let truncated = content.slice(0, maxLen);
-  const lastPeriod = truncated.lastIndexOf('. ');
-  if (lastPeriod > 0) truncated = truncated.slice(0, lastPeriod + 1);
-  return truncated;
-}
+// Use shared formatting helpers; expose MARKDOWN_WRAP_WIDTH symbol locally
+const MARKDOWN_WRAP_WIDTH_LOCAL = MARKDOWN_WRAP_WIDTH;
 
 /**
  * Convert a parsed JSON briefing payload into human-readable Markdown.
@@ -1167,92 +1049,7 @@ function extractSummaryFromMarkdown(content: string, maxLen = 1500): string {
  * to produce a readable markdown representation rather than dumping raw
  * JSON to Discord.
  */
-function renderBriefingFromJson(jsonOut: any): string {
-  if (typeof jsonOut === "string") return jsonOut;
-
-  if (Array.isArray(jsonOut)) {
-    // If array of plain strings, join with paragraphs.
-    if (jsonOut.every((el) => typeof el === "string")) {
-      return jsonOut.join("\n\n");
-    }
-
-    // Map array entries to readable blocks
-    const parts: string[] = jsonOut
-      .map((el) => {
-        if (!el && el !== 0) return "";
-        if (typeof el === "string") return el;
-        if (typeof el === "object") {
-          const title = el.title || el.name || el.heading;
-          const content = el.briefing || el.summary || el.text || el.body || el.markdown || el.md || el.content;
-          if (title && typeof content === "string") {
-            return `## ${String(title).trim()}\n\n${content.trim()}`;
-          }
-          // Fallback to converting object
-          return renderBriefingFromJson(el);
-        }
-        return String(el);
-      })
-      .filter(Boolean);
-
-    if (parts.length > 0) return parts.join("\n\n");
-    return JSON.stringify(jsonOut, null, 2);
-  }
-
-  if (jsonOut && typeof jsonOut === "object") {
-    // Prefer well-known single-field values
-    const preferred = ["briefing", "markdown", "md", "summary", "text", "body", "content"];
-    for (const k of preferred) {
-      if (k in jsonOut && typeof (jsonOut as any)[k] === "string" && (jsonOut as any)[k].trim()) {
-        return (jsonOut as any)[k];
-      }
-    }
-
-    // Handle array of sections
-    if (Array.isArray((jsonOut as any).sections)) {
-      const parts = (jsonOut as any).sections
-        .map((s: any) => {
-          if (!s && s !== 0) return "";
-          if (typeof s === "string") return s;
-          if (typeof s === "object") {
-            const title = s.title || s.heading || s.name;
-            const content = s.content || s.briefing || s.summary || s.text || s.body || s.markdown || s.md;
-            if (title) return `## ${String(title).trim()}\n\n${renderBriefingFromJson(content || s)}`;
-            return renderBriefingFromJson(s);
-          }
-          return String(s);
-        })
-        .filter(Boolean);
-
-      if (parts.length > 0) return parts.join("\n\n");
-    }
-
-    // Generic object -> render keys as headings with their stringified values
-    const keys = Object.keys(jsonOut);
-    if (keys.length > 0) {
-      const parts = keys
-        .map((k) => {
-          const v = (jsonOut as any)[k];
-          if (v === undefined || v === null) return "";
-          let content: string;
-          if (typeof v === "string") content = v;
-          else if (Array.isArray(v)) content = v.map((el) => (typeof el === "string" ? el : JSON.stringify(el))).join("\n\n");
-          else if (typeof v === "object") content = renderBriefingFromJson(v);
-          else content = String(v);
-          return `## ${k}\n\n${content}`;
-        })
-        .filter(Boolean);
-
-      if (parts.length > 0) return parts.join("\n\n");
-    }
-  }
-
-  // Fallback: pretty JSON
-  try {
-    return JSON.stringify(jsonOut, null, 2);
-  } catch {
-    return String(jsonOut);
-  }
-}
+// Briefing rendering is provided by presenters/discordFormatting.js
 
 async function editReplyWithPossibleAttachment(
   interaction: ChatInputCommandInteraction,
@@ -1301,7 +1098,7 @@ async function editReplyWithPossibleAttachment(
   }
 
   // Create a compact summary and attach original content as a .md file
-  const summary = extractSummaryFromMarkdown(content, DISCORD_CONTENT_LIMIT - headerLine.length - 120);
+  const summary = sharedExtractSummaryFromMarkdown(content, DISCORD_CONTENT_LIMIT - headerLine.length - 120);
   const summaryText = `${headerLine}\n\n${summary}\n\n*(Full content attached as ${filename})*`;
 
   const file = { attachment: Buffer.from(content, "utf8"), name: filename };
@@ -1894,12 +1691,12 @@ const bot = new DiscordBot({
           const jsonOut = JSON.parse(stdoutText);
           // Render JSON-first output into human-readable markdown rather than
           // posting raw JSON to Discord.
-          briefingText = renderBriefingFromJson(jsonOut);
+          briefingText = sharedRenderBriefingFromJson(jsonOut);
         } catch {
           // keep raw text
         }
 
-        briefingText = wrapMarkdownText(briefingText, MARKDOWN_WRAP_WIDTH);
+        briefingText = sharedWrapMarkdownText(briefingText, MARKDOWN_WRAP_WIDTH_LOCAL);
 
         await editReplyWithPossibleAttachment(
           cmd,

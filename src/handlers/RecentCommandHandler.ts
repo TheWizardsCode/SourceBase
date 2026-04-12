@@ -1,5 +1,6 @@
 import type { ChatInputCommandInteraction } from "discord.js";
 import { runCliCommand, CliRunnerError } from "../bot/cli-runner.js";
+import { DISCORD_CONTENT_LIMIT } from "../presenters/discordFormatting.js";
 import type { SlashCommandHandler } from "../interfaces/command-handler.js";
 
 const DEFAULT_ERROR_MESSAGE = "❌ Failed to retrieve recent OpenBrain items. Please try again.";
@@ -120,8 +121,6 @@ export class RecentCommandHandler implements SlashCommandHandler {
       }
 
       const message = lines.join("\n").trim();
-      const DISCORD_CONTENT_LIMIT = 1900;
-
       if (message.length <= DISCORD_CONTENT_LIMIT) {
         await command.editReply(message);
       } else {

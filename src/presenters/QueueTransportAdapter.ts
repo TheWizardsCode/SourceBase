@@ -1,5 +1,6 @@
 import type { Client, TextChannel } from "discord.js";
 import type { QueueTransportPayload } from "./QueuePresenter.js";
+import { sendWithFallback as sendWithFallbackFromPresenter } from "./QueuePresenter.js";
 
 /**
  * SendableTarget is the minimal runtime shape QueuePresenter expects for
@@ -58,3 +59,17 @@ export async function resolveTransportPayloadToTarget(
 }
 
 export default resolveTransportPayloadToTarget;
+
+/**
+ * Small adapter that attempts to send content to a resolved target using the
+ * presenters-layer sendWithFallback semantics. This keeps caller code uniform
+ * when operating on resolved transport payloads.
+ */
+export async function sendWithFallbackToResolvedTarget(
+  target: SendableTarget | null | undefined,
+  body: string,
+  logger?: any,
+  lastPostedMessage?: any
+): Promise<any> {
+  return await sendWithFallbackFromPresenter(target, body, logger, lastPostedMessage);
+}

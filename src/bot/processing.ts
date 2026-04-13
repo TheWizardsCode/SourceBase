@@ -18,6 +18,7 @@ import {
   sendGeneratedSummary,
   buildOpenBrainItemLink,
 } from "./summaries.js";
+import { sendWithFallback } from "../presenters/QueuePresenter.js";
 import {
   addReaction,
   removeReaction,
@@ -302,8 +303,9 @@ async function handleSuccess(
     // observed via progress events.
     if (thread) {
       try {
-        const posted = await thread.send(successMsg);
+        const posted = await sendWithFallback(thread, successMsg, logger, lastPostedMessage);
         lastPostedMessage = posted ?? lastPostedMessage;
+        if (!posted) summaryTargetThread = null;
       } catch (error) {
         logger.warn(
           "Failed to send final success message to thread; falling back to channel reply",
@@ -313,15 +315,6 @@ async function handleSuccess(
           }
         );
         summaryTargetThread = null;
-        try {
-          const posted = await message.reply(successMsg);
-          lastPostedMessage = posted ?? lastPostedMessage;
-        } catch (err) {
-          logger.warn("Failed to send fallback success reply to channel", {
-            messageId: message.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
       }
     } else {
       const posted = await message.reply(successMsg);
@@ -343,17 +336,8 @@ async function handleSuccess(
         });
         const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
         try {
-          if (lastPostedMessage && typeof lastPostedMessage.edit === "function") {
-            const prevContent =
-              typeof lastPostedMessage.content === "string"
-                ? lastPostedMessage.content
-                : successMsg;
-            await lastPostedMessage.edit(prevContent + appended);
-          } else if (thread) {
-            await thread.send(`✅ OpenBrain item: <${itemLink}>`);
-          } else {
-            await message.reply(`✅ OpenBrain item: <${itemLink}>`);
-          }
+          const contentToSend = (lastPostedMessage && typeof lastPostedMessage.content === "string" ? lastPostedMessage.content : successMsg) + appended;
+          await sendWithFallback(thread ?? message, contentToSend, logger, lastPostedMessage);
         } catch (err2) {
           logger.warn("Failed to post item link follow-up", {
             messageId: message.id,

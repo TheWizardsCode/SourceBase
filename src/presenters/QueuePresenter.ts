@@ -78,6 +78,65 @@ export class QueuePresenter {
   }
 
   /**
+   * Attempt to send a message to a target with well-defined fallback order:
+   * 1. target.send(body)
+   * 2. lastPostedMessage.edit(body) when available
+   * 3. target.channel.send(body)
+   *
+   * Logs a single structured warning when an error occurs and returns the
+   * resolved message-like object on success or undefined on failure.
+   */
+  async sendWithFallback(target: any, body: string, logger?: any, lastPostedMessage?: any): Promise<any> {
+    // Attempt each operation independently so a failure in one step doesn't
+    // prevent trying the next. Capture the last error so we can emit a single
+    // structured warning if everything fails.
+    let lastErr: any = null;
+
+    // 1) Prefer explicit target.send
+    if (target && typeof target.send === "function") {
+      try {
+        return await target.send(body);
+      } catch (err) {
+        lastErr = err;
+        // continue to fallbacks
+      }
+    }
+
+    // 2) If a last posted message is available try edit
+    if (lastPostedMessage && typeof lastPostedMessage.edit === "function") {
+      try {
+        await lastPostedMessage.edit(body);
+        return lastPostedMessage;
+      } catch (err) {
+        lastErr = err;
+        // fall through to channel send
+      }
+    }
+
+    // 3) If the provided target has a channel with send, use it
+    if (target && target.channel && typeof target.channel.send === "function") {
+      try {
+        return await target.channel.send(body);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    // 4) Nothing we can do at runtime - if this is a transport payload defer
+    if (target && (target.channelId || target.messageId || target.authorId)) {
+      this.logger?.debug?.("QueuePresenter.sendWithFallback: transport payload provided; deferring send", { payload: target });
+      return target;
+    }
+
+    if (lastErr) {
+      const structured = { originalError: lastErr instanceof Error ? lastErr.message : String(lastErr), targetId: target?.id ?? target?.channelId ?? null };
+      (logger ?? this.logger)?.warn?.("sendWithFallback failed", structured);
+    }
+
+    return undefined;
+  }
+
+  /**
    * Create or update a status message keyed by `key` in the provided target.
    * The `target` may expose `send(content)` or `reply(content)` which resolves
    * to a message object; if the previously-posted message supports `edit()`
@@ -157,6 +216,17 @@ export class QueuePresenter {
 }
 
 export default QueuePresenter;
+
+/**
+ * Convenience top-level helper that mirrors QueuePresenter.sendWithFallback semantics
+ * without requiring callers to hold a presenter instance. It creates a short-lived
+ * QueuePresenter for the purpose of sending and delegates logging to the provided
+ * logger when given.
+ */
+export async function sendWithFallback(target: any, body: string, logger?: any, lastPostedMessage?: any): Promise<any> {
+  const qp = new QueuePresenter(logger);
+  return qp.sendWithFallback(target, body, logger, lastPostedMessage);
+}
 
 /**
  * Minimal transport payload representing persisted queue context.

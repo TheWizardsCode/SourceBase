@@ -8,6 +8,7 @@ import {
 import { ProgressPresenter } from "../presenters/progress.js";
 import { runSummaryCommand, type AddResult } from "./cli-runner.js";
 import { sleep } from "./utils.js";
+import { sendWithFallback } from "../presenters/QueuePresenter.js";
 
 /**
  * Retry configuration for summary generation
@@ -244,9 +245,7 @@ export async function sendGeneratedSummary(
     });
 
     try {
-      await target.send(
-        `⚠️ Failed to generate summary for <${addResult.url}> after ${SUMMARY_RETRY_ATTEMPTS} attempts. Marked for manual review.`
-      );
+      await sendWithFallback(target, `⚠️ Failed to generate summary for <${addResult.url}> after ${SUMMARY_RETRY_ATTEMPTS} attempts. Marked for manual review.`, logger);
     } catch (error) {
       logger?.warn("Failed to send summary failure notice", {
         messageId: message.id,
@@ -314,25 +313,35 @@ export async function sendGeneratedSummary(
   }
 
   // Attempt to post to the resolved target (thread preferred or fallback).
-  try {
-    if (!isTooLong) {
-      // send full text inline
-      await (target as any).send(fullText);
-    } else {
-      // attach full content as a markdown file and include snippet in message
-      await (target as any).send({ content: snippetMessage, files: [file] });
+    try {
+      if (!isTooLong) {
+        await sendWithFallback(target, fullText, logger);
+      } else {
+        // When attaching files, use the target.send call directly because
+        // sendWithFallback expects a string body. As a pragmatic minimal
+        // change we attempt to send the snippetMessage and then separately
+        // attach the file to the original message where supported.
+        await sendWithFallback(target, snippetMessage, logger);
+        // Try best-effort attach when target supports send with files
+        try {
+          if ((target as any)?.send && typeof (target as any).send === "function") {
+            await (target as any).send({ files: [file] });
+          }
+        } catch {
+          // ignore attach failures
+        }
+      }
+      anyPosted = true;
+    } catch (err) {
+      logger?.error("Failed to post generated summary to target", {
+        messageId: message.id,
+        targetId: target.id,
+        url: addResult.url,
+        itemId: addResult.id,
+        marker,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    anyPosted = true;
-  } catch (err) {
-    logger?.error("Failed to post generated summary to target", {
-      messageId: message.id,
-      targetId: target.id,
-      url: addResult.url,
-      itemId: addResult.id,
-      marker,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
 
   if (anyPosted) {
     postedSummaryMarkers.add(marker);

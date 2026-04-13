@@ -1,0 +1,53 @@
+Seed Context
+- Work item: REFACTOR: Extract message-posting fallback helper (SB-0MNX9W7T40037C7L)
+- Type: task
+- Tags: refactor,discord
+- One-line: Centralise repeated fallback logic for posting messages to thread/channel and add unit tests.
+
+Draft Feature Plan (3 features)
+
+1) Short Title: Presenter send-with-fallback
+Summary: Extract a single sendWithFallback API in the presenters layer (QueuePresenter/QueueTransportAdapter) that attempts target.send, falls back to edit or target.channel.send, and centralises logging and error semantics.
+Acceptance Criteria:
+- sendWithFallback attempts target.send and returns the message object on success
+- On failure it attempts lastPostedMessage.edit when available, then target.channel.send
+- Errors are logged with a single structured message and include original error and target id
+- Existing call-sites in processing.ts and index.ts use the new API without behavioural regressions
+  - Verify by unit tests that for each replaced call-site the same sequence of sends/edits occurs in mocked scenarios (see tests in Feature 2)
+Minimal Implementation:
+- Add sendWithFallback method to QueuePresenter and QueueTransportAdapter (small adapter method)
+- Implement unit tests that mock send/edit/channel.send flows
+- Replace 2-3 call-sites in processing.ts and index.ts to use presenter.sendWithFallback
+Dependencies: QueuePresenter, QueueTransportAdapter, presenters/QueuePresenter.ts
+Deliverables: code, unit tests, changelog entry, small README note explaining API
+
+2) Short Title: Send fallback unit tests
+Summary: Add deterministic unit tests that mock target shapes (thread, channel, message) to validate fallback order and logging.
+Acceptance Criteria:
+- Tests cover: primary send success; primary send failure then edit success; primary+edit failure then channel.send success; all fail logs error
+- Tests run in CI and do not require network or Discord credentials
+- Tests assert logging contains expected fields
+Minimal Implementation:
+- Add tests under tests/presenters/sendWithFallback.test.ts
+- Use sinon or jest mocks to simulate send/edit/channel.send
+- Wire tests into existing test runner (npm test)
+Dependencies: Test framework, logger test helper
+Deliverables: test files, CI green
+
+3) Short Title: Replace call-sites with helper
+Summary: Replace duplicated try/catch send/edit/channel logic in processing.ts, summaries.ts, and index.ts with the new presenter API and remove dead code.
+Acceptance Criteria:
+- All replaced call-sites compile and behaviour remains unchanged for happy-path and fallback-paths as validated by unit tests
+  - Verify by unit tests that the sequence of attempts (send -> edit -> channel.send) and final outcome match pre-refactor behaviour using mocks
+- No duplicate fallback logic remains in covered files
+- A small migration note in changelog documents where changes were made
+Minimal Implementation:
+- Modify processing.ts, summaries.ts, index.ts to call presenter.sendWithFallback(...) or QueuePresenter.postToTarget wrapper
+- Add unit tests for at least one end-to-end flow that uses mocked presenter
+Dependencies: Feature 1 and 2
+Deliverables: code changes, tests, changelog
+
+Appendix: planned clarifying questions
+- Q: "The work item stage is currently 'idea' (not 'intake_complete'). How should I proceed?" — Answer: "Mark intake_complete and proceed (Recommended)" — Source: user reply
+- Q: "Which set of tests should the feature include?" — Answer: "Unit tests for helper with mocked thread/channel (Recommended)" — Source: user reply
+- Q: "Where should the extracted send-with-fallback helper live?" — Answer: "Reuse presenters/QueuePresenter or QueueTransportAdapter (Recommended)" — Source: user reply

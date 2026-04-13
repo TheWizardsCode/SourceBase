@@ -9,55 +9,32 @@ export function makeTempFileName(prefix = "briefing", ext = "md") {
  * Build a verbose CLI error report suitable for posting to a Discord thread.
  * Keeps the message compact but includes actionable debugging details.
  */
-export function buildCliErrorReport(params: { command: string; args: string[]; exitCode?: number; stderr?: string; spawnError?: string; note?: string; }): string {
+export function buildCliErrorReport(params: { command: string; args: string[]; exitCode?: number; error?: string; stderr?: string; spawnError?: string; note?: string; }): string {
   const lines: string[] = [];
   lines.push("⚠️ CLI Error Report");
   lines.push("");
   lines.push(`Command: \`${params.command} ${params.args.map(a => String(a)).join(' ')}\``);
   if (params.exitCode !== undefined) lines.push(`Exit code: ${params.exitCode}`);
   if (params.spawnError) lines.push(`Spawn error: ${params.spawnError}`);
+  
+  // Include the error message prominently (this is often the most useful information)
+  if (params.error) {
+    lines.push("");
+    lines.push("--- Error Message ---");
+    lines.push("```\n" + params.error + "\n```");
+  }
+  
   if (params.stderr) {
     const stderrSnippet = params.stderr.length > 1500 ? params.stderr.slice(0, 1500) + "\n...(truncated)" : params.stderr;
+    lines.push("");
     lines.push("--- stderr ---");
     lines.push("```\n" + stderrSnippet + "\n```");
   }
-  // Best-effort Root Cause Analysis (heuristic)
-  try {
-    const rca: string[] = [];
-    if (params.spawnError) {
-      rca.push("The CLI failed to start (spawn error). This often means the executable is missing or lacks execute permission.");
-    } else if (params.exitCode !== undefined) {
-      if (params.exitCode === -1) {
-        rca.push("The CLI timed out or a spawn error occurred (exitCode -1). Check host resource usage and CLI availability.");
-      } else if (params.exitCode >= 1 && params.exitCode <= 127) {
-        rca.push("The CLI exited with a non-zero status. Inspect stderr for application-level errors (parsing, network, permission issues).");
-      }
-    }
-
-    if (params.stderr) {
-      const s = params.stderr.toLowerCase();
-      if (/enoent/.test(s) || /not found/.test(s)) {
-        rca.push("ENOENT / not found: the CLI binary could not be located. Verify OB_CLI_PATH or PATH on the host.");
-      }
-      if (/eacces|permission denied/.test(s)) {
-        rca.push("Permission denied: the CLI binary or a required resource lacks execute/read permission.");
-      }
-      if (/connection refused|failed to connect|timeout/.test(s)) {
-        rca.push("Network related error: the CLI attempted an outbound connection and failed. Check network connectivity and proxies.");
-      }
-      if (/out of memory|killed/.test(s)) {
-        rca.push("Process killed / OOM: the host may be under memory pressure.");
-      }
-    }
-
-    if (rca.length > 0) {
-      lines.push("");
-      lines.push("--- Best-effort Root Cause Analysis ---");
-      for (const l of rca) lines.push(`- ${l}`);
-    }
-  } catch {
-    // non-fatal: ignore any issues while producing RCA
-  }
+  // NOTE: Previously a best-effort root-cause analysis (RCA) was included
+  // here that attempted to infer causes from stderr/error message text. It
+  // was often inaccurate or misleading, so it has been removed. The report
+  // now focuses on providing the raw command, exit code, error message (if
+  // any), and a stderr snippet which are the most actionable items.
 
   // Suggested next steps for maintainers
   lines.push("");

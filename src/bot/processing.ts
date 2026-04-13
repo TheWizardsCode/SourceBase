@@ -95,6 +95,12 @@ export async function processUrlWithProgress(
 
     let eventCount = 0;
     let finalResult: AddResult | undefined;
+    // Capture last non-empty message text emitted by CLI progress events. The
+    // CLI may emit a short final error wrapper (e.g. {"error":"add_failed"})
+    // while earlier progress events contain the underlying application error
+    // (for example a DB schema error). Record the last observed event.message
+    // so it can be included in diagnostic reports.
+    let lastEventMessageDetail: string | undefined;
 
     // ProgressPresenter manages status message state and lifecycle. Create
     // a single instance per URL processing session so it can track phase
@@ -122,6 +128,10 @@ export async function processUrlWithProgress(
       // Process yielded progress event
       const event = iteration.value;
       eventCount++;
+      // Keep track of the last non-empty message coming from progress events.
+      if (event && typeof event.message === "string" && event.message.trim() !== "") {
+        lastEventMessageDetail = event.message;
+      }
       logger.info("Received CLI progress event", {
         messageId: message.id,
         url,
@@ -181,6 +191,7 @@ export async function processUrlWithProgress(
         lastPostedMessage,
         presenter,
         url,
+        lastEventMessageDetail,
       });
     } else {
       await handleNoResult(message, thread, { logger, url });
@@ -204,6 +215,10 @@ async function handleProcessingResult(
     lastPostedMessage: any;
     presenter: ProgressPresenter;
     url: string;
+    // Optional last observed CLI progress event message (useful when stderr
+    // contains only a generic wrapper). This provides the underlying error
+    // detail emitted earlier in the event stream.
+    lastEventMessageDetail?: string;
   }
 ): Promise<void> {
   const {
@@ -233,7 +248,7 @@ async function handleProcessingResult(
       url,
     });
   } else {
-    await handleFailure(message, thread, finalResult, { logger, url });
+    await handleFailure(message, thread, finalResult, { logger, url, lastEventMessageDetail: params.lastEventMessageDetail });
   }
 }
 
@@ -380,9 +395,9 @@ async function handleFailure(
   message: Message,
   thread: ThreadChannel | null,
   finalResult: AddResult,
-  params: { logger: Logger; url: string }
+  params: { logger: Logger; url: string; lastEventMessageDetail?: string }
 ): Promise<void> {
-  const { logger, url } = params;
+  const { logger, url, lastEventMessageDetail } = params;
 
   await removeReaction(message, PROCESSING_REACTION, logger);
   await addReaction(message, FAILURE_REACTION, logger);
@@ -392,7 +407,7 @@ async function handleFailure(
   const errorMsg = `❌ Failed to add ${displayUrl}\n\n${errorBody}`;
 
   if (!finalResult?.success && (finalResult?.exitCode !== undefined || finalResult?.stderr)) {
-    await handleCliError(message, thread, finalResult, { logger, url, errorMsg });
+    await handleCliError(message, thread, finalResult, { logger, url, errorMsg, lastEventMessageDetail });
   } else {
     await sendErrorMessage(message, thread, errorMsg, logger);
   }
@@ -405,16 +420,23 @@ async function handleCliError(
   message: Message,
   thread: ThreadChannel | null,
   finalResult: AddResult,
-  params: { logger: Logger; url: string; errorMsg: string }
+  params: { logger: Logger; url: string; errorMsg: string; lastEventMessageDetail?: string }
 ): Promise<void> {
-  const { logger, url, errorMsg } = params;
+  const { logger, url, errorMsg, lastEventMessageDetail } = params;
 
   try {
     const cmd = `add --format ndjson ${url}`;
+    // If the CLI emitted a more specific error earlier in the event stream
+    // (for example, a DB schema error included in an event.message), prefer
+    // including that detail in the diagnostic report. finalResult.stderr may
+    // contain a generic wrapper like {"error":"add_failed"} that is not
+    // actionable on its own.
+    const underlyingErrorDetail = lastEventMessageDetail || finalResult?.error;
     const report = buildCliErrorReport({
       command: cmd,
       args: [],
       exitCode: finalResult?.exitCode,
+      error: underlyingErrorDetail,
       stderr: finalResult?.stderr,
       note: "Observed during processing of user-submitted URL",
     });

@@ -9,15 +9,14 @@ import {
 import { botConfig as config } from "./config/bot.js";
 import { Logger } from "./log/index.js";
 import { DiscordBot } from "./discord/client.js";
-import { buildCliErrorReport } from "./discord/utils.js";
+import { buildCliErrorReport, makeTempFileName } from "./discord/utils.js";
+import { postCliErrorReport } from "./discord/cli-error-report.js";
 import { isLikelyContentQuery } from "./query/detector.js";
 import { formatProgressMessage } from "./formatters/progress.js";
-import { postCliErrorReport } from "./discord/cli-error-report.js";
 import {
   DISCORD_CONTENT_LIMIT,
-  extractSummaryFromMarkdown as sharedExtractSummaryFromMarkdown,
-  wrapMarkdownText as sharedWrapMarkdownText,
-  renderBriefingFromJson as sharedRenderBriefingFromJson,
+  renderBriefingFromJson,
+  wrapMarkdownText,
   MARKDOWN_WRAP_WIDTH,
 } from "./presenters/discordFormatting.js";
 import { CrawlCommandHandler } from "./handlers/CrawlCommandHandler.js";
@@ -32,20 +31,35 @@ import {
   formatQueuedUrlMessage,
 } from "./presenters/queue.js";
 import QueuePresenter from "./presenters/QueuePresenter.js";
-import { ProgressPresenter } from "./presenters/progress.js";
 import {
-  runAddCommand,
-  runSummaryCommand,
   runCliCommand,
   isCliAvailable,
   CliRunnerError,
-  type AddResult,
 } from "./bot/cli-runner.js";
 import { pathToFileURL } from "url";
-import { extractUrls as sharedExtractUrls } from "./url.js";
+import { extractUrls } from "./url.js";
+import { processUrlWithProgress } from "./bot/processing.js";
+import {
+  createThreadForMessage,
+  formatThreadName,
+} from "./bot/threads.js";
+import {
+  generateSummaryWithRetry,
+  buildOpenBrainItemLink,
+} from "./bot/summaries.js";
+import {
+  addReaction,
+  removeReaction,
+  checkCliAvailability,
+  isChatInputInteraction,
+  CLI_UNAVAILABLE_MESSAGE,
+  PROCESSING_REACTION,
+  SUCCESS_REACTION,
+  FAILURE_REACTION,
+} from "./bot/utils.js";
 
 // ============================================================================
-// Logger
+// Logger and Handlers
 // ============================================================================
 
 const logger = new Logger(config.LOG_LEVEL as any);
@@ -54,1003 +68,32 @@ const statsCommandHandler = new StatsCommandHandler();
 const recentCommandHandler = new RecentCommandHandler();
 const addCommandHandler = new AddCommandHandler();
 const showCommandHandler = new ShowCommandHandler();
+
 // QueuePresenter manages lifecycle of short-lived queue status messages
 const queuePresenter = new QueuePresenter(logger);
 
+// Export for backward compatibility
 export { formatProgressMessage };
 export { postCliErrorReport };
 
-/**
- * Format thread name for URL processing
- */
-function formatThreadName(url: string): string {
-  // Extract domain from URL for thread name
-  try {
-    const urlObj = new URL(url);
-    const domain = urlObj.hostname.replace(/^www\./, "");
-    return `Processing: ${domain}`;
-  } catch {
-    return "Processing URL";
-  }
-}
-
-/**
- * User-facing error message for CLI unavailability
- */
-const CLI_UNAVAILABLE_MESSAGE = "⚠️ OpenBrain CLI is not available. Please ensure the CLI is installed and accessible on PATH.";
-
 // ============================================================================
-// Message Reactions
+// Constants
 // ============================================================================
 
-const PROCESSING_REACTION = "👀";
-const SUCCESS_REACTION = "✅";
-const FAILURE_REACTION = "⚠️";
-const SUMMARY_RETRY_ATTEMPTS = 3;
-const SUMMARY_RETRY_BASE_DELAY_MS = process.env.NODE_ENV === "test" ? 1 : 500;
+const MARKDOWN_WRAP_WIDTH_LOCAL = MARKDOWN_WRAP_WIDTH;
 
-type SendableTarget = {
-  id: string;
-  send: (content: string) => Promise<unknown>;
-};
-
-const postedSummaryMarkers = new Set<string>();
-const manualReviewSummaryMarkers = new Set<string>();
 // Cache for message-level saved briefings to enforce idempotency.
 // Key: Discord message id (the bot's reply message that contains the briefing)
 // Value: numeric item id when saved, or 'saving' when an ingestion is in progress
 const saveBriefingCache = new Map<string, number | "saving">();
 
-function isChatInputInteraction(
-  interaction: Interaction
-): interaction is ChatInputCommandInteraction {
-  const maybe = interaction as unknown as {
-    isChatInputCommand?: () => boolean;
-    isCommand?: () => boolean;
-  };
-
-  if (typeof maybe.isChatInputCommand === "function") {
-    return maybe.isChatInputCommand();
-  }
-
-  if (typeof maybe.isCommand === "function") {
-    return maybe.isCommand();
-  }
-
-  return false;
-}
-
-function getSummaryMarker(url: string, itemId?: number): string {
-  return itemId !== undefined ? `item:${itemId}` : `url:${url}`;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function buildOpenBrainItemLink(itemId: number | undefined, sourceUrl: string): string {
-  const template = config.OPENBRAIN_ITEM_URL_TEMPLATE?.trim();
-
-  if (!template) {
-    return sourceUrl;
-  }
-
-  return template
-    .replaceAll("{id}", itemId !== undefined ? String(itemId) : "")
-    .replaceAll("{url}", encodeURIComponent(sourceUrl));
-}
-
-function formatSummaryMessage(params: {
-  summary: string;
-  itemId?: number;
-  sourceUrl: string;
-  authorId: string;
-  timestamp?: string;
-  itemLink: string;
-}): string {
-  const {
-    summary,
-    itemId,
-    sourceUrl,
-    authorId,
-    timestamp,
-    itemLink,
-  } = params;
-
-  return [
-    "🧾 OpenBrain summary",
-    "",
-    summary,
-    "",
-    `OpenBrain item: <${itemLink}>`,
-    `Source URL: <${sourceUrl}>`,
-    `Item ID: ${itemId !== undefined ? itemId : "unknown"}`,
-    `Author: <@${authorId}>`,
-    `Timestamp: ${timestamp || new Date().toISOString()}`,
-  ].join("\n");
-}
-
-async function resolveSummaryTarget(
-  message: Message,
-  preferredThread: ThreadChannel | null
-): Promise<SendableTarget | null> {
-  if (preferredThread) {
-    return preferredThread as unknown as SendableTarget;
-  }
-
-  const fallbackChannelId = config.DEFAULT_DISCORD_CHANNEL_ID?.trim();
-  if (fallbackChannelId) {
-    try {
-      const fallbackChannel = await message.client.channels.fetch(fallbackChannelId);
-      if (fallbackChannel && typeof (fallbackChannel as any).send === "function") {
-        return fallbackChannel as unknown as SendableTarget;
-      }
-
-      logger.warn("Configured default summary channel is not sendable", {
-        channelId: fallbackChannelId,
-        messageId: message.id,
-      });
-    } catch (error) {
-      logger.warn("Failed to resolve configured default summary channel", {
-        channelId: fallbackChannelId,
-        messageId: message.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  if (typeof (message.channel as any).send === "function") {
-    return message.channel as unknown as SendableTarget;
-  }
-
-  return null;
-}
-
-/**
- * Create a thread for a given message with fallbacks.
- * Tries message.startThread(), then channel.threads.create() (with and without startMessage).
- * Returns the created ThreadChannel or null if thread creation is not supported / failed.
- */
-async function createThreadForMessage(message: Message, name: string, autoArchiveDuration = 60): Promise<ThreadChannel | null> {
-  try {
-    // Prefer the Message#startThread API when available
-    const startThreadFn = (message as any).startThread;
-    if (typeof startThreadFn === "function") {
-      try {
-        const t = await startThreadFn.call(message, { name, autoArchiveDuration });
-        logger.info("Created thread with message.startThread", { messageId: message.id, threadId: (t as any)?.id });
-        return t as ThreadChannel;
-      } catch (err) {
-        logger.warn("message.startThread failed", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-
-    // Fallback: channel.threads.create()
-    const chAny = message.channel as any;
-    if (chAny && chAny.threads && typeof chAny.threads.create === "function") {
-      try {
-        // Try with startMessage (preferred) then without if it fails
-        try {
-          const t = await chAny.threads.create({ name, autoArchiveDuration, startMessage: message.id });
-          logger.info("Created thread with channel.threads.create (with startMessage)", { messageId: message.id, threadId: (t as any)?.id });
-          return t as ThreadChannel;
-        } catch (err) {
-          logger.warn("channel.threads.create with startMessage failed, trying without startMessage", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-          const t2 = await chAny.threads.create({ name, autoArchiveDuration });
-          logger.info("Created thread with channel.threads.create (without startMessage)", { messageId: message.id, threadId: (t2 as any)?.id });
-          return t2 as ThreadChannel;
-        }
-      } catch (err) {
-        logger.warn("channel.threads.create failed", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-  } catch (err) {
-    logger.warn("Unhandled error while attempting to create thread", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-  }
-  return null;
-}
-
-async function generateSummaryWithRetry(url: string, context: {
-  channelId: string;
-  messageId: string;
-  authorId: string;
-  timeoutMs?: number;
-  maxAttempts?: number;
-  retryBaseDelayMs?: number;
-}): Promise<{ success: true; summary: string } | { success: false; error: string }> {
-  const maxAttempts = Math.max(1, context.maxAttempts ?? SUMMARY_RETRY_ATTEMPTS);
-  const retryBaseDelayMs = Math.max(1, context.retryBaseDelayMs ?? SUMMARY_RETRY_BASE_DELAY_MS);
-  let lastError = "Unknown summary generation error";
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const result = await runSummaryCommand(url, {
-      ...context,
-      timeoutMs: context.timeoutMs,
-    });
-
-    // Defensive: some tests/mocks may return undefined or non-object values.
-    if (result && typeof result === "object" && result.success && result.summary) {
-      return { success: true, summary: result.summary };
-    }
-
-    lastError = (result && typeof result === "object" && (result.error || "Summary command returned no output")) || "Summary command returned no output";
-
-    if (attempt < maxAttempts) {
-      const delayMs = retryBaseDelayMs * Math.pow(2, attempt - 1);
-      await sleep(delayMs);
-    }
-  }
-
-  return { success: false, error: lastError };
-}
-
-async function sendGeneratedSummary(
-  message: Message,
-  preferredThread: ThreadChannel | null,
-  addResult: AddResult
-): Promise<void> {
-  if (!config.SEND_SUMMARY_ON_INSERT) {
-    return;
-  }
-
-  const marker = getSummaryMarker(addResult.url, addResult.id);
-  if (postedSummaryMarkers.has(marker)) {
-    logger.info("Summary already posted for item, skipping duplicate", {
-      messageId: message.id,
-      url: addResult.url,
-      itemId: addResult.id,
-    });
-    return;
-  }
-
-  const target = await resolveSummaryTarget(message, preferredThread);
-  if (!target) {
-    logger.warn("No sendable target available for summary message", {
-      messageId: message.id,
-      url: addResult.url,
-      itemId: addResult.id,
-    });
-    return;
-  }
-
-  const summaryResult = await generateSummaryWithRetry(addResult.url, {
-    channelId: message.channelId,
-    messageId: message.id,
-    authorId: message.author.id,
-  });
-
-  if (!summaryResult.success) {
-    manualReviewSummaryMarkers.add(marker);
-    logger.error("Failed to generate summary after retries; marked for manual review", {
-      messageId: message.id,
-      targetId: target.id,
-      url: addResult.url,
-      itemId: addResult.id,
-      error: summaryResult.error,
-    });
-
-    try {
-      await target.send(
-        `⚠️ Failed to generate summary for <${addResult.url}> after ${SUMMARY_RETRY_ATTEMPTS} attempts. Marked for manual review.`
-      );
-    } catch (error) {
-      logger.warn("Failed to send summary failure notice", {
-        messageId: message.id,
-        targetId: target.id,
-        url: addResult.url,
-        itemId: addResult.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    return;
-  }
-
-  const itemLink = buildOpenBrainItemLink(addResult.id, addResult.url);
-  const fullText = formatSummaryMessage({
-    summary: summaryResult.summary,
-    itemId: addResult.id,
-    sourceUrl: addResult.url,
-    authorId: message.author.id,
-    timestamp: addResult.timestamp,
-    itemLink,
-  });
-
-  // Decide whether to attach the full summary as a file or send inline.
-  const isTooLong = fullText.length > DISCORD_CONTENT_LIMIT;
-
-  // Build a compact snippet to use in messages when the full text is too long.
-  const snippet = isTooLong
-    ? sharedExtractSummaryFromMarkdown(fullText, Math.max(200, DISCORD_CONTENT_LIMIT - 300))
-    : fullText;
-
-  const metadata = [
-    `OpenBrain item: <${itemLink}>`,
-    `Source URL: <${addResult.url}>`,
-    `Item ID: ${addResult.id !== undefined ? addResult.id : "unknown"}`,
-    `Author: <@${message.author.id}>`,
-    `Timestamp: ${addResult.timestamp || new Date().toISOString()}`,
-  ].join("\n");
-
-  const snippetMessage = ["🧾 OpenBrain summary", "", snippet, "", metadata].join("\n");
-
-  let anyPosted = false;
-
-  // Prepare attachment for long summaries so it can be used for both reply
-  // and thread targets. We build the file buffer regardless but only attach
-  // it when needed.
-  const filename = `openbrain-summary-${addResult.id ?? "unknown"}.md`;
-  const file = { attachment: Buffer.from(fullText, "utf8"), name: filename };
-
-  // Attempt to post a reply to the original message (always attempt)
-  try {
-    // If not too long, send full text in reply; otherwise send snippet and attach file.
-    if (!isTooLong) {
-      await message.reply(fullText as any);
-    } else {
-      await message.reply({ content: snippetMessage, files: [file] } as any);
-    }
-    anyPosted = true;
-  } catch (err) {
-    logger.warn("Failed to send summary as a reply", {
-      messageId: message.id,
-      url: addResult.url,
-      itemId: addResult.id,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  // Attempt to post to the resolved target (thread preferred or fallback).
-  try {
-    if (!isTooLong) {
-      // send full text inline
-      await (target as any).send(fullText);
-    } else {
-      // attach full content as a markdown file and include snippet in message
-      await (target as any).send({ content: snippetMessage, files: [file] });
-    }
-    anyPosted = true;
-  } catch (err) {
-    logger.error("Failed to post generated summary to target", {
-      messageId: message.id,
-      targetId: target.id,
-      url: addResult.url,
-      itemId: addResult.id,
-      marker,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  if (anyPosted) {
-    postedSummaryMarkers.add(marker);
-    manualReviewSummaryMarkers.delete(marker);
-    logger.info("Posted generated summary to Discord (reply and/or target)", {
-      messageId: message.id,
-      targetId: target.id,
-      url: addResult.url,
-      itemId: addResult.id,
-      marker,
-    });
-  } else {
-    logger.warn("Did not post generated summary to any destination", { messageId: message.id, url: addResult.url, itemId: addResult.id, marker });
-  }
-}
-
-/**
- * Add a reaction to a message
- */
-async function addReaction(message: Message, emoji: string): Promise<void> {
-  try {
-    await message.react(emoji);
-  } catch (error) {
-    logger.warn("Failed to add reaction", {
-      messageId: message.id,
-      emoji,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-/**
- * Remove a reaction from a message (removes bot's reaction only)
- */
-async function removeReaction(message: Message, emoji: string): Promise<void> {
-  try {
-    const botUserId = message.client?.user?.id;
-    if (!botUserId) return;
-
-    // Get the reaction and remove the bot's reaction
-    const reaction = message.reactions.cache.get(emoji);
-    if (reaction) {
-      await reaction.users.remove(botUserId);
-    }
-  } catch (error) {
-    logger.warn("Failed to remove reaction", {
-      messageId: message.id,
-      emoji,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-/**
- * Check if CLI is available and reply with error message if not
- * @returns true if CLI is available, false otherwise
- */
-async function checkCliAvailability(message: Message): Promise<boolean> {
-  logger.debug("Checking CLI availability...", { messageId: message.id });
-  
-  try {
-    const isAvailable = await Promise.race([
-      isCliAvailable(),
-      new Promise<boolean>((_, reject) => 
-        setTimeout(() => reject(new Error("CLI check timeout")), 10000)
-      )
-    ]);
-    
-    if (!isAvailable) {
-      logger.warn("CLI availability check failed - CLI not found", {
-        messageId: message.id,
-        channelId: message.channelId,
-      });
-      await message.reply(CLI_UNAVAILABLE_MESSAGE);
-      return false;
-    }
-    
-    logger.debug("CLI is available", { messageId: message.id });
-    return true;
-  } catch (error) {
-    logger.error("CLI availability check error", {
-      messageId: message.id,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    await message.reply(CLI_UNAVAILABLE_MESSAGE);
-    return false;
-  }
-}
-
 // ============================================================================
-// URL Processing
+// Summary and Briefing Helpers
 // ============================================================================
 
-// Legacy local URL extractor removed. Use shared `extractUrls` from
-// src/url.ts (imported above as `sharedExtractUrls`).
-
 /**
- * Process a URL with threaded progress updates
- * Creates a thread and sends progress events as they occur
+ * Edit a reply with possible attachment for long content
  */
-async function processUrlWithProgress(
-  message: Message,
-  url: string
-): Promise<void> {
-  logger.info("Starting URL processing", { messageId: message.id, url });
-  
-  let thread: ThreadChannel | null = null;
-  
-  // Add processing reaction to indicate the bot is working
-  await addReaction(message, PROCESSING_REACTION);
-  
-  try {
-    // Try to create a thread for progress updates with robust fallbacks
-    thread = await createThreadForMessage(message, formatThreadName(url), 60);
-
-    if (thread) {
-      logger.info("Created thread for URL processing", {
-        messageId: message.id,
-        threadId: thread.id,
-        url,
-      });
-    }
-  } catch (error) {
-    // Thread creation failed, log and continue without thread
-    logger.warn("Failed to create thread for progress updates", {
-      messageId: message.id,
-      url,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  
-  try {
-    logger.info("Starting CLI add command", { messageId: message.id, url });
-    
-    // Run the add command with progress tracking
-    const addGenerator = runAddCommand(url, {
-      channelId: message.channelId,
-      messageId: message.id,
-      authorId: message.author.id,
-    });
-    
-    let eventCount = 0;
-    let finalResult: AddResult | undefined;
-
-    // ProgressPresenter manages status message state and lifecycle. Create
-    // a single instance per URL processing session so it can track phase
-    // deduplication and terminal suppression across the event stream.
-    const presenter = new ProgressPresenter(thread, message, logger);
-
-    // Process progress events using manual iteration to capture return value
-    logger.info("Waiting for CLI progress events...", { messageId: message.id, url });
-
-    while (true) {
-      const iteration = await addGenerator.next();
-
-      if (iteration.done) {
-        // Generator completed - capture the return value
-        finalResult = iteration.value;
-        logger.info("CLI generator completed", {
-          messageId: message.id,
-          url,
-          eventCount,
-          hasResult: !!finalResult,
-        });
-        break;
-      }
-
-      // Process yielded progress event
-      const event = iteration.value;
-      eventCount++;
-      logger.info("Received CLI progress event", {
-        messageId: message.id,
-        url,
-        phase: event.phase,
-        eventCount,
-      });
-
-      try {
-        await presenter.handleProgressEvent(event);
-      } catch (err) {
-        // Defensive fallback: if the presenter fails for any reason, log and
-        // attempt a minimal inline post so users still see progress.
-        logger.warn("ProgressPresenter.handleProgressEvent failed; falling back to inline posting", {
-          messageId: message.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-
-        // Build a safe progress message (wrap title/url in backticks)
-        const progressMsg = formatProgressMessage(event);
-        const safeProgressMsg = (() => {
-          try {
-            if (event.title) return progressMsg.replace(event.title, `\`${event.title}\``);
-            if (event.url) return progressMsg.replace(event.url, `\`${event.url}\``);
-            return progressMsg;
-          } catch {
-            return progressMsg;
-          }
-        })();
-
-        try {
-          if (thread) {
-            await thread.send(safeProgressMsg);
-          } else {
-            await message.reply(safeProgressMsg);
-          }
-        } catch (err2) {
-          logger.warn("Failed to post progress update via fallback path", {
-            messageId: message.id,
-            error: err2 instanceof Error ? err2.message : String(err2),
-          });
-        }
-      }
-    }
-
-    // Retrieve presenter state for final result handling
-    const lastPhase = presenter.getLastPhase();
-    let lastPostedMessage: any = presenter.getLastPostedMessage();
-    if (finalResult) {
-      logger.info("CLI processing complete", {
-        messageId: message.id,
-        url,
-        success: finalResult.success,
-        title: finalResult.title,
-        error: finalResult.error,
-      });
-
-      if (finalResult.success) {
-        await removeReaction(message, PROCESSING_REACTION);
-        await addReaction(message, SUCCESS_REACTION);
-
-        const displayName = finalResult.title ? `\`${finalResult.title}\`` : `\`${url}\``;
-        let successMsg = `✅ Added: ${displayName}`;
-        const itemId = finalResult?.id;
-        const itemLink = itemId !== undefined ? buildOpenBrainItemLink(itemId, finalResult?.url || url) : undefined;
-        if (itemLink) {
-          successMsg = `✅ Added: ${displayName} — OpenBrain item: <${itemLink}>`;
-        }
-
-        let summaryTargetThread: ThreadChannel | null = thread;
-        const alreadyCompleted = lastPhase === "completed";
-
-        if (!alreadyCompleted) {
-          // Post a final success message if the completed phase wasn't already
-          // observed via progress events.
-            if (thread) {
-              try {
-                const posted = await thread.send(successMsg);
-                lastPostedMessage = posted ?? lastPostedMessage;
-              } catch (error) {
-                logger.warn("Failed to send final success message to thread; falling back to channel reply", {
-                  threadId: thread.id,
-                  error: error instanceof Error ? error.message : String(error),
-                });
-                summaryTargetThread = null;
-                try {
-                  const posted = await message.reply(successMsg);
-                  lastPostedMessage = posted ?? lastPostedMessage;
-                } catch (err) {
-                  logger.warn("Failed to send fallback success reply to channel", {
-                    messageId: message.id,
-                    error: err instanceof Error ? err.message : String(err),
-                  });
-                }
-              }
-            } else {
-              const posted = await message.reply(successMsg);
-              lastPostedMessage = posted ?? lastPostedMessage;
-            }
-        } else {
-          // completed phase was already posted; try to append item link to
-          // the last posted message, or fall back to posting the link.
-          if (itemId !== undefined) {
-            try {
-              // Prefer using the presenter's appendItemLink() helper which will
-              // attempt to edit the last posted message or post a follow-up when
-              // editing is not possible.
-              await presenter.appendItemLink(itemLink, itemId, successMsg);
-            } catch (err) {
-              logger.warn("ProgressPresenter.appendItemLink failed; falling back to inline posting", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-              const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
-              try {
-                if (lastPostedMessage && typeof lastPostedMessage.edit === "function") {
-                  const prevContent = typeof lastPostedMessage.content === "string" ? lastPostedMessage.content : successMsg;
-                  await lastPostedMessage.edit(prevContent + appended);
-                } else if (thread) {
-                  await thread.send(`✅ OpenBrain item: <${itemLink}>`);
-                } else {
-                  await message.reply(`✅ OpenBrain item: <${itemLink}>`);
-                }
-              } catch (err2) {
-                logger.warn("Failed to post item link follow-up", { messageId: message.id, error: err2 instanceof Error ? err2.message : String(err2) });
-              }
-            }
-          } else {
-            logger.debug("Skipping duplicate final success message because completed event was already posted", { messageId: message.id, url });
-          }
-        }
-
-        await sendGeneratedSummary(message, summaryTargetThread, finalResult);
-
-        if (summaryTargetThread) {
-          try {
-            await summaryTargetThread.setArchived(true);
-          } catch (error) {
-            logger.warn("Failed to archive thread after summary posting", {
-              threadId: summaryTargetThread.id,
-              messageId: message.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-      } else {
-        await removeReaction(message, PROCESSING_REACTION);
-        await addReaction(message, FAILURE_REACTION);
-
-        const displayUrl = `\`${url}\``;
-        const errorBody = finalResult?.error || CLI_UNAVAILABLE_MESSAGE;
-        const errorMsg = `❌ Failed to add ${displayUrl}\n\n${errorBody}`;
-
-        if (!finalResult?.success && (finalResult?.exitCode !== undefined || finalResult?.stderr)) {
-          try {
-            const cmd = `add --format ndjson ${url}`;
-            const report = buildCliErrorReport({
-              command: cmd,
-              args: [],
-              exitCode: finalResult?.exitCode,
-              stderr: finalResult?.stderr,
-              note: "Observed during processing of user-submitted URL",
-            });
-
-            if (thread) {
-              try {
-                await postCliErrorReport(thread, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
-                await thread.send(errorMsg);
-                await thread.setArchived(true).catch(() => {});
-              } catch (sendError) {
-                logger.warn("Failed to send CLI error report to thread; falling back to channel reply", {
-                  threadId: thread.id,
-                  error: sendError instanceof Error ? sendError.message : String(sendError),
-                });
-                try {
-                  await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
-                  await message.reply(errorMsg);
-                } catch (replyError) {
-                  logger.warn("Failed to send fallback CLI error report reply", {
-                    messageId: message.id,
-                    error: replyError instanceof Error ? replyError.message : String(replyError),
-                  });
-                }
-              }
-            } else {
-              const t = await createThreadForMessage(message, `CLI error: ${new URL(url).hostname}`, 60);
-              if (t) {
-                try {
-                  await postCliErrorReport(t, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
-                  await t.send(errorMsg);
-                  await t.setArchived(true).catch(() => {});
-                } catch (threadErr) {
-                  logger.warn("Failed to send CLI error report to created thread; falling back to reply", {
-                    messageId: message.id,
-                    threadId: t.id,
-                    error: threadErr instanceof Error ? threadErr.message : String(threadErr),
-                  });
-                  try {
-                    await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
-                    await message.reply(errorMsg);
-                  } catch (replyError) {
-                    logger.warn("Failed to reply with CLI error report", {
-                      messageId: message.id,
-                      error: replyError instanceof Error ? replyError.message : String(replyError),
-                    });
-                  }
-                }
-              } else {
-                try {
-                  await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
-                  await message.reply(errorMsg);
-                } catch (replyError) {
-                  logger.warn("Failed to reply with CLI error report (no thread available)", {
-                    messageId: message.id,
-                    error: replyError instanceof Error ? replyError.message : String(replyError),
-                  });
-                }
-              }
-            }
-          } catch (err) {
-            logger.warn("Error while attempting to post CLI error report", { error: err instanceof Error ? err.message : String(err) });
-            if (thread) {
-              try {
-                await thread.send(errorMsg);
-                await thread.setArchived(true);
-              } catch (sendError) {
-                logger.warn("Failed to send final error message to thread; falling back to channel reply", {
-                  threadId: thread.id,
-                  error: sendError instanceof Error ? sendError.message : String(sendError),
-                });
-                try {
-                  await message.reply(errorMsg);
-                } catch (err2) {
-                  logger.warn("Failed to send fallback error reply to channel", {
-                    messageId: message.id,
-                    error: err2 instanceof Error ? err2.message : String(err2),
-                  });
-                }
-              }
-            } else {
-              await message.reply(errorMsg);
-            }
-          }
-        } else {
-          if (thread) {
-            try {
-              await thread.send(errorMsg);
-              await thread.setArchived(true);
-            } catch (error) {
-              logger.warn("Failed to send final error message to thread; falling back to channel reply", {
-                threadId: thread.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-              try {
-                await message.reply(errorMsg);
-              } catch (err) {
-                logger.warn("Failed to send fallback error reply to channel", {
-                  messageId: message.id,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              }
-            }
-          } else {
-            await message.reply(errorMsg);
-          }
-        }
-      }
-    } else {
-      logger.error("CLI generator did not return a result", {
-        messageId: message.id,
-        url,
-      });
-
-      try {
-        await removeReaction(message, PROCESSING_REACTION);
-        await addReaction(message, FAILURE_REACTION);
-      } catch {
-        // ignore reaction failures
-      }
-
-      try {
-        await message.reply(
-          "❌ Failed to add URL: internal error while processing the request. The CLI did not return a result."
-        );
-      } catch (err) {
-        logger.warn("Failed to send fallback error reply when CLI returned no result", {
-          messageId: message.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  } catch (error) {
-    logger.error("Exception during URL processing", {
-      messageId: message.id,
-      url,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    
-    // Handle CLI errors
-    if (error instanceof CliRunnerError) {
-      logger.error("CLI error during URL processing", {
-        messageId: message.id,
-        url,
-        exitCode: error.exitCode,
-        stderr: error.stderr,
-      });
-    }
-    
-    // Remove processing reaction and add failure reaction
-    await removeReaction(message, PROCESSING_REACTION);
-    await addReaction(message, FAILURE_REACTION);
-    
-    const errorMsg = `❌ Failed to add URL\n\n${CLI_UNAVAILABLE_MESSAGE}`;
-
-    // If this was a CLI-specific error, attempt to create/post a detailed
-    // diagnostic report in the thread (or create a new thread) so maintainers
-    // have actionable debugging information (command, exit code, stderr).
-    if (error instanceof CliRunnerError) {
-      try {
-        const cmd = `add --format ndjson ${url}`;
-        const report = buildCliErrorReport({
-          command: cmd,
-          args: [],
-          exitCode: error.exitCode,
-          stderr: error.stderr,
-          spawnError: error.message,
-          note: "Observed during processing of user-submitted URL"
-        });
-
-        // Try to send to existing thread
-        if (thread) {
-          try {
-            await thread.send(report);
-            await thread.setArchived(true).catch(() => {});
-          } catch (sendError) {
-            logger.error("Failed to send CLI error report to thread", {
-              threadId: thread.id,
-              error: sendError instanceof Error ? sendError.message : String(sendError),
-            });
-            // Fallback to channel reply
-            try {
-              await message.reply(report);
-            } catch (replyError) {
-              logger.error("Failed to reply with CLI error report", {
-                messageId: message.id,
-                error: replyError instanceof Error ? replyError.message : String(replyError),
-              });
-            }
-          }
-        } else if (typeof message.startThread === "function") {
-          // Try to create a dedicated thread for the error report
-          try {
-            const t = await message.startThread({ name: `CLI error: ${new URL(url).hostname}`, autoArchiveDuration: 60 });
-            await t.send(report);
-            await t.setArchived(true).catch(() => {});
-          } catch (threadErr) {
-            logger.warn("Failed to create thread for CLI error report; falling back to reply", {
-              messageId: message.id,
-              error: threadErr instanceof Error ? threadErr.message : String(threadErr),
-            });
-            try {
-              await message.reply(report);
-            } catch (replyError) {
-              logger.error("Failed to reply with CLI error report", {
-                messageId: message.id,
-                error: replyError instanceof Error ? replyError.message : String(replyError),
-              });
-            }
-          }
-        } else {
-          // Last resort - reply in channel
-          try {
-            await message.reply(report);
-          } catch (replyError) {
-            logger.error("Failed to reply with CLI error report (no thread available)", {
-              messageId: message.id,
-              error: replyError instanceof Error ? replyError.message : String(replyError),
-            });
-          }
-        }
-      } catch (err) {
-        logger.warn("Error while attempting to post CLI error report", { error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-
-    // Send a user-facing brief error message to the thread or channel
-    if (thread) {
-      try {
-        await thread.send(errorMsg);
-        await thread.setArchived(true);
-      } catch (sendError) {
-        logger.error("Failed to send error message to thread", {
-          threadId: thread.id,
-          error: sendError instanceof Error ? sendError.message : String(sendError),
-        });
-      }
-    } else {
-      await message.reply(errorMsg);
-    }
-  }
-}
-
-/**
- * Suppress embeds on a message if the bot has the MANAGE_MESSAGES permission.
- * Returns true if suppression was attempted and succeeded, false otherwise.
- */
-async function suppressEmbedsIfPermitted(message: Message): Promise<boolean> {
-  try {
-    const guild = message.guild;
-    if (!guild) {
-      logger.debug("Message not in a guild; cannot suppress embeds", { messageId: message.id });
-      return false;
-    }
-
-    const botUserId = message.client?.user?.id;
-    if (!botUserId) {
-      logger.warn("Could not determine bot user id for permission check", { messageId: message.id });
-      return false;
-    }
-
-    // Fetch the bot's guild member to get up-to-date permissions
-    const botMember = await guild.members.fetch(botUserId);
-    if (!botMember) {
-      logger.warn("Failed to fetch bot guild member", { messageId: message.id });
-      return false;
-    }
-
-    if (!botMember.permissions.has(PermissionFlagsBits.ManageMessages)) {
-      logger.warn("Bot lacks MANAGE_MESSAGES permission; cannot suppress embeds", { messageId: message.id });
-      return false;
-    }
-
-    // Call suppressEmbeds if available on this Message object
-    const suppressFn = (message as any).suppressEmbeds;
-    if (typeof suppressFn === "function") {
-      await suppressFn.call(message, true);
-      logger.debug("Suppressed embeds on message", { messageId: message.id });
-      return true;
-    }
-
-    logger.warn("suppressEmbeds method not available on message object", { messageId: message.id });
-    return false;
-  } catch (err) {
-    logger.warn("Error while attempting to suppress embeds", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-    return false;
-  }
-}
-
-// ==========================================================================
-// Reply helper: summarize and attach large content
-// ==========================================================================
-
-// Use shared formatting helpers; expose MARKDOWN_WRAP_WIDTH symbol locally
-const MARKDOWN_WRAP_WIDTH_LOCAL = MARKDOWN_WRAP_WIDTH;
-
-/**
- * Convert a parsed JSON briefing payload into human-readable Markdown.
- * This is defensive: the CLI may return different JSON shapes (string,
- * array of strings, object with known keys, or structured sections). Try
- * to produce a readable markdown representation rather than dumping raw
- * JSON to Discord.
- */
-// Briefing rendering is provided by presenters/discordFormatting.js
-
 async function editReplyWithPossibleAttachment(
   interaction: ChatInputCommandInteraction,
   headerLine: string,
@@ -1058,6 +101,9 @@ async function editReplyWithPossibleAttachment(
   filename = "content.md",
   showSaveButton = false
 ): Promise<void> {
+  const { extractSummaryFromMarkdown } = await import(
+    "./presenters/discordFormatting.js"
+  );
   const fullText = `${headerLine}\n\n${content}`;
 
   // Build optional components (raw shape accepted by discord.js).
@@ -1065,21 +111,22 @@ async function editReplyWithPossibleAttachment(
   // fake editReply handler expects a string argument and will stringify
   // objects (resulting in '[object Object]'). In real runtime we include
   // the button when requested.
-  const components = showSaveButton && process.env.NODE_ENV !== "test"
-    ? [
-        {
-          type: 1,
-          components: [
-            {
-              type: 2,
-              style: 1,
-              custom_id: "save_briefing",
-              label: "Save briefing",
-            },
-          ],
-        },
-      ]
-    : undefined;
+  const components =
+    showSaveButton && process.env.NODE_ENV !== "test"
+      ? [
+          {
+            type: 1,
+            components: [
+              {
+                type: 2,
+                style: 1,
+                custom_id: "save_briefing",
+                label: "Save briefing",
+              },
+            ],
+          },
+        ]
+      : undefined;
 
   if (fullText.length <= DISCORD_CONTENT_LIMIT) {
     if (!components) await interaction.editReply(fullText);
@@ -1088,8 +135,8 @@ async function editReplyWithPossibleAttachment(
     try {
       const posted = await interaction.fetchReply();
       if (posted && typeof posted.id === "string") {
-        // best-effort
-        suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+        const { suppressEmbedsIfPermitted } = await import("./bot/utils.js");
+        suppressEmbedsIfPermitted(posted as Message, logger).catch(() => {});
       }
     } catch {
       // ignore
@@ -1098,17 +145,27 @@ async function editReplyWithPossibleAttachment(
   }
 
   // Create a compact summary and attach original content as a .md file
-  const summary = sharedExtractSummaryFromMarkdown(content, DISCORD_CONTENT_LIMIT - headerLine.length - 120);
+  const summary = extractSummaryFromMarkdown(
+    content,
+    DISCORD_CONTENT_LIMIT - headerLine.length - 120
+  );
   const summaryText = `${headerLine}\n\n${summary}\n\n*(Full content attached as ${filename})*`;
 
   const file = { attachment: Buffer.from(content, "utf8"), name: filename };
-  if (!components) await interaction.editReply({ content: summaryText, files: [file] } as any);
-  else await interaction.editReply({ content: summaryText, files: [file], components } as any);
+  if (!components)
+    await interaction.editReply({ content: summaryText, files: [file] } as any);
+  else
+    await interaction.editReply({
+      content: summaryText,
+      files: [file],
+      components,
+    } as any);
 
   try {
     const posted = await interaction.fetchReply();
     if (posted && typeof posted.id === "string") {
-      suppressEmbedsIfPermitted(posted as Message).catch(() => {});
+      const { suppressEmbedsIfPermitted } = await import("./bot/utils.js");
+      suppressEmbedsIfPermitted(posted as Message, logger).catch(() => {});
     }
   } catch {
     // ignore
@@ -1137,30 +194,37 @@ const bot = new DiscordBot({
           try {
             const atts: any = sourceMessage?.attachments;
             if (atts && atts.size && atts.size > 0) {
-                const att = atts.first();
-                if (att && att.url && att.name && att.name.endsWith(".md")) {
-                  try {
-                    const resp = await fetch(att.url);
-                    if (resp.ok) briefingText = await resp.text();
-                    else briefingText = (sourceMessage.content || "").trim();
-                  } catch {
-                    briefingText = (sourceMessage.content || "").trim();
-                  }
+              const att = atts.first();
+              if (att && att.url && att.name && att.name.endsWith(".md")) {
+                try {
+                  const resp = await fetch(att.url);
+                  if (resp.ok) briefingText = await resp.text();
+                  else briefingText = (sourceMessage.content || "").trim();
+                } catch {
+                  briefingText = (sourceMessage.content || "").trim();
                 }
               } else {
                 briefingText = (sourceMessage?.content || "").trim();
               }
+            } else {
+              briefingText = (sourceMessage?.content || "").trim();
+            }
           } catch {
             briefingText = (sourceMessage?.content || "").trim();
           }
 
           if (!briefingText) {
-            await btn.editReply({ content: "❌ Could not extract briefing text from the message." });
+            await btn.editReply({
+              content: "❌ Could not extract briefing text from the message.",
+            });
             return;
           }
 
           if (!(await isCliAvailable())) {
-            await btn.editReply({ content: "⚠️ OpenBrain CLI is not available. Please ensure the CLI is installed on the host." });
+            await btn.editReply({
+              content:
+                "⚠️ OpenBrain CLI is not available. Please ensure the CLI is installed on the host.",
+            });
             return;
           }
 
@@ -1171,12 +235,20 @@ const bot = new DiscordBot({
           if (replyMessageId) {
             const cached = saveBriefingCache.get(replyMessageId);
             if (cached === "saving") {
-              await btn.editReply({ content: "⏳ Briefing save already in progress for this message. Please wait..." });
+              await btn.editReply({
+                content:
+                  "⏳ Briefing save already in progress for this message. Please wait...",
+              });
               return;
             }
             if (typeof cached === "number") {
-              const itemUrl = buildOpenBrainItemLink(cached, `openbrain://sorra/${cached}`);
-              await btn.editReply({ content: `✅ Briefing already saved: <${itemUrl}>` });
+              const itemUrl = buildOpenBrainItemLink(
+                cached,
+                `openbrain://sorra/${cached}`
+              );
+              await btn.editReply({
+                content: `✅ Briefing already saved: <${itemUrl}>`,
+              });
               return;
             }
 
@@ -1184,77 +256,95 @@ const bot = new DiscordBot({
             saveBriefingCache.set(replyMessageId, "saving");
           }
 
-          const { makeTempFileName } = await import("./discord/utils.js");
           const tmpName = makeTempFileName("briefing", "md");
           const fs = await import("fs/promises");
           try {
             await fs.writeFile(tmpName, briefingText, "utf8");
           } catch (err) {
-            await btn.editReply({ content: `❌ Failed to write temporary briefing file: ${String(err)}` });
+            await btn.editReply({
+              content: `❌ Failed to write temporary briefing file: ${String(err)}`,
+            });
             return;
           }
 
-            try {
-              // The OpenBrain CLI expects URLs. For local temporary files,
-              // provide a file:// URL so the CLI treats it as a valid input.
-              // Convert local filesystem path to a file:// URL for the CLI using
-              // pathToFileURL for correct cross-platform encoding.
-              const tmpArg = (typeof tmpName === "string")
+          try {
+            // The OpenBrain CLI expects URLs. For local temporary files,
+            // provide a file:// URL so the CLI treats it as a valid input.
+            // Convert local filesystem path to a file:// URL for the CLI using
+            // pathToFileURL for correct cross-platform encoding.
+            const tmpArg =
+              typeof tmpName === "string"
                 ? pathToFileURL(tmpName).toString()
                 : tmpName;
 
-              const addResult = await runCliCommand("add", ["--format", "ndjson", tmpArg], {
+            const addResult = await runCliCommand(
+              "add",
+              ["--format", "ndjson", tmpArg],
+              {
                 channelId: btn.channelId ?? undefined,
                 messageId: undefined,
                 authorId: btn.user?.id,
-              });
-
-              if (addResult.exitCode !== 0) {
-                if (replyMessageId) saveBriefingCache.delete(replyMessageId);
-                await btn.editReply({ content: `❌ Failed to ingest briefing: CLI error` });
-                return;
               }
+            );
 
-              let createdId: number | undefined = undefined;
-              for (const line of addResult.stdout) {
-                try {
-                  const obj = JSON.parse(line);
-                  if (obj && typeof obj === "object" && (obj.id || obj.item_id)) {
-                    const raw = obj.id ?? obj.item_id;
-                    if (typeof raw === "number") createdId = raw;
-                    else if (typeof raw === "string" && /^\d+$/.test(raw)) createdId = parseInt(raw, 10);
-                    break;
-                  }
-                } catch {
-                  const m = line.match(/id[:=]\s*(\d+)/i);
-                  if (m) {
-                    createdId = parseInt(m[1], 10);
-                    break;
-                  }
+            if (addResult.exitCode !== 0) {
+              if (replyMessageId) saveBriefingCache.delete(replyMessageId);
+              await btn.editReply({
+                content: `❌ Failed to ingest briefing: CLI error`,
+              });
+              return;
+            }
+
+            let createdId: number | undefined = undefined;
+            for (const line of addResult.stdout) {
+              try {
+                const obj = JSON.parse(line);
+                if (obj && typeof obj === "object" && (obj.id || obj.item_id)) {
+                  const raw = obj.id ?? obj.item_id;
+                  if (typeof raw === "number") createdId = raw;
+                  else if (
+                    typeof raw === "string" &&
+                    /^\d+$/.test(raw)
+                  )
+                    createdId = parseInt(raw, 10);
+                  break;
+                }
+              } catch {
+                const m = line.match(/id[:=]\s*(\d+)/i);
+                if (m) {
+                  createdId = parseInt(m[1], 10);
+                  break;
                 }
               }
-
-              let successMsg = "✅ Briefing ingested into OpenBrain.";
-              if (createdId !== undefined) {
-                const itemUrl = buildOpenBrainItemLink(createdId, `openbrain://sorra/${createdId}`);
-                successMsg = `✅ Briefing saved: <${itemUrl}>`;
-                if (replyMessageId) saveBriefingCache.set(replyMessageId, createdId);
-              } else {
-                if (replyMessageId) saveBriefingCache.delete(replyMessageId);
-              }
-
-              await btn.editReply({ content: successMsg });
-            } catch (err) {
-              if (replyMessageId) saveBriefingCache.delete(replyMessageId);
-              await btn.editReply({ content: `❌ Failed to ingest briefing: ${String(err)}` });
-            } finally {
-              try {
-                const fs2 = await import("fs/promises");
-                await fs2.unlink(tmpName).catch(() => {});
-              } catch {
-                // ignore
-              }
             }
+
+            let successMsg = "✅ Briefing ingested into OpenBrain.";
+            if (createdId !== undefined) {
+              const itemUrl = buildOpenBrainItemLink(
+                createdId,
+                `openbrain://sorra/${createdId}`
+              );
+              successMsg = `✅ Briefing saved: <${itemUrl}>`;
+              if (replyMessageId)
+                saveBriefingCache.set(replyMessageId, createdId);
+            } else {
+              if (replyMessageId) saveBriefingCache.delete(replyMessageId);
+            }
+
+            await btn.editReply({ content: successMsg });
+          } catch (err) {
+            if (replyMessageId) saveBriefingCache.delete(replyMessageId);
+            await btn.editReply({
+              content: `❌ Failed to ingest briefing: ${String(err)}`,
+            });
+          } finally {
+            try {
+              const fs2 = await import("fs/promises");
+              await fs2.unlink(tmpName).catch(() => {});
+            } catch {
+              // ignore
+            }
+          }
 
           return;
         }
@@ -1263,15 +353,30 @@ const bot = new DiscordBot({
       try {
         if (interaction.isButton && interaction.isButton()) {
           const btn = interaction as ButtonInteraction;
-          await btn.reply({ content: "An unexpected error occurred while handling the Save briefing action.", ephemeral: true });
+          await btn.reply({
+            content:
+              "An unexpected error occurred while handling the Save briefing action.",
+            ephemeral: true,
+          });
         } else if (isChatInputInteraction(interaction)) {
           const cmdErr = interaction as ChatInputCommandInteraction;
-          await cmdErr.reply({ content: "An unexpected error occurred while handling the Save briefing action.", ephemeral: true });
+          await cmdErr.reply({
+            content:
+              "An unexpected error occurred while handling the Save briefing action.",
+            ephemeral: true,
+          });
         } else {
           // Best-effort fallback for unknown interaction shapes (tests may use plain objects)
           try {
-            const anyI = interaction as unknown as { reply?: (arg: any) => Promise<any> };
-            if (typeof anyI.reply === "function") await anyI.reply({ content: "An unexpected error occurred while handling the Save briefing action.", ephemeral: true });
+            const anyI = interaction as unknown as {
+              reply?: (arg: any) => Promise<any>;
+            };
+            if (typeof anyI.reply === "function")
+              await anyI.reply({
+                content:
+                  "An unexpected error occurred while handling the Save briefing action.",
+                ephemeral: true,
+              });
           } catch {
             // ignore
           }
@@ -1310,718 +415,918 @@ const bot = new DiscordBot({
 
     // Handle /search
     if (commandName === "search") {
-      try {
-        const query = cmd.options.getString("query", true);
-        const limit = cmd.options.getInteger("limit") || 5;
-
-        await cmd.deferReply();
-
-        const clamped = Math.max(1, Math.min(20, limit));
-        const args = ["--json", "--limit", String(clamped), query];
-
-        const result = await runCliCommand("search", args, {
-          channelId: cmd.channelId ?? undefined,
-          messageId: undefined,
-          authorId: cmd.user?.id,
-        });
-
-        if (result.exitCode !== 0) {
-          await cmd.editReply("❌ Search failed: CLI returned an error");
-          return;
-        }
-
-        if (result.stdout.length === 0) {
-          await cmd.editReply("No results found.");
-          return;
-        }
-
-        function parseSearchLine(line: string): { title: string; url: string } | null {
-          const trimmed = line.trim();
-          if (!trimmed) return null;
-
-          try {
-            const obj = JSON.parse(trimmed);
-            if (obj && typeof obj === "object") {
-              const url = (obj.url || obj.link || obj.href) as string | undefined;
-              const title = (obj.title || obj.name || obj.text) as string | undefined;
-              if (url) return { title: title || url, url };
-            }
-          } catch {
-            // ignore
-          }
-
-          const urlMatch = trimmed.match(/https?:\/\/[^\s<>"{}|\\^`[\]]+/i);
-          const url = urlMatch ? urlMatch[0] : null;
-          if (!url) return null;
-
-          let remainder = trimmed.replace(url, "").trim();
-          const delimiterRegex = /[|│┃║┆┊╎╏\u2500-\u257F]+/;
-          if (delimiterRegex.test(remainder)) {
-            const cells = remainder.split(delimiterRegex).map((c) => c.trim()).filter(Boolean);
-            if (cells.length > 0) {
-              // Prefer the first cell that looks like a textual title (not an index/score)
-              let title: string | null = null;
-              for (const c of cells) {
-                const cell = String(c).trim();
-                if (!cell) continue;
-                // Skip purely numeric or percentage cells (indexes, scores)
-                if (/^\d+(?:\.\d+)?%?$/.test(cell)) continue;
-                // Prefer cells that contain letters (Unicode aware)
-                try {
-                  if (/\p{L}/u.test(cell)) {
-                    title = cell;
-                    break;
-                  }
-                } catch {
-                  // Fallback for environments not supporting \p{L}
-                  if (/[A-Za-z]/.test(cell)) {
-                    title = cell;
-                    break;
-                  }
-                }
-                if (!title) title = cell;
-              }
-
-              let titleStr = title || url;
-              // Remove trailing numeric scores or percentages from the title
-              titleStr = titleStr.replace(/\s*\d+(?:\.\d+)?%?$/g, "").trim();
-              // Remove any leftover box-drawing characters
-              titleStr = titleStr.replace(/[│┃║┆┊╎╏\u2500-\u257F]/g, "").replace(/\|/g, " ").trim();
-              if (!titleStr) titleStr = url;
-              return { title: titleStr, url };
-            }
-          }
-
-          remainder = remainder.replace(/\(.*?relevance.*?\)/i, "").replace(/\(\s*[0-9.]+\s*\)/, "").trim();
-          remainder = remainder.replace(/(?:\|)?\s*(?:relevance[:\s]*\d+(?:\.\d+)?|\d+(?:\.\d+)?)\s*$/i, "").trim();
-          remainder = remainder.replace(/^[\-–—\|:]+\s*/, "").replace(/\s+[\-–—\|:]+$/, "").trim();
-
-          let title = remainder.replace(/\|/g, " ").trim();
-          if (!title) title = url;
-          return { title, url };
-        }
-
-        let parsed: { title: string; url: string }[] = [];
-        const stdoutText = result.stdout.join("\n").trim();
-
-        try {
-          const jsonOut = JSON.parse(stdoutText);
-          let items: any[] = [];
-
-          if (Array.isArray(jsonOut)) {
-            items = jsonOut;
-          } else if (jsonOut && typeof jsonOut === "object") {
-            if (Array.isArray(jsonOut.results)) items = jsonOut.results;
-            else if (Array.isArray(jsonOut.hits)) items = jsonOut.hits;
-            else if (Array.isArray(jsonOut.items)) items = jsonOut.items;
-            else if (Array.isArray(jsonOut.rows)) items = jsonOut.rows;
-            else {
-              const arrProp = Object.keys(jsonOut).find((k) => Array.isArray((jsonOut as any)[k]));
-              if (arrProp) items = (jsonOut as any)[arrProp];
-            }
-          }
-
-          parsed = items
-            .map((obj) => {
-              if (!obj || typeof obj !== "object") return null;
-              const url = obj.url || obj.link || obj.href;
-              let title = obj.title || obj.name || obj.text;
-              if (!url) return null;
-              if (!title || typeof title !== "string") title = url;
-              return { title: String(title).trim(), url: String(url).trim() };
-            })
-            .filter((v): v is { title: string; url: string } => !!v)
-            .slice(0, clamped);
-        } catch (e) {
-          parsed = result.stdout
-            .map((l) => parseSearchLine(l))
-            .filter((v): v is { title: string; url: string } => !!v)
-            .slice(0, clamped);
-        }
-
-        // Sanitize titles: remove any embedded Markdown links ([text](url)) so we don't
-        // accidentally re-introduce markdown link formatting, then escape stray closing
-        // bracket characters.
-        const escapeTitle = (s: string) => {
-          if (!s) return s;
-          // Replace markdown link occurrences with their inner text
-          let t = String(s).replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
-          // Escape any remaining closing bracket to avoid accidental markdown parsing
-          t = t.replace(/\]/g, "\\]");
-          return t;
-        };
-
-        if (parsed.length === 0) {
-          await cmd.editReply("No results found.");
-          return;
-        }
-
-        // Start a thread off the original bot reply and post each result as a
-        // message in the thread. If thread creation is unavailable, fall back
-        // to in-channel output.
-
-        let parentMsg: Message | null = null;
-        try {
-          parentMsg = (await cmd.fetchReply()) as Message;
-        } catch {
-          // ignore
-        }
-
-        let thread: ThreadChannel | null = null;
-        const searchingThreadName = `Searching for '${query}'...`;
-        if (parentMsg && typeof (parentMsg as any).startThread === "function") {
-          try {
-            thread = await (parentMsg as any).startThread({ name: searchingThreadName, autoArchiveDuration: 60 });
-          } catch (err) {
-            logger.warn("Failed to start thread from reply", { error: err instanceof Error ? err.message : String(err) });
-          }
-        }
-
-        if (!thread) {
-          try {
-            const chAny = cmd.channel as any;
-            if (chAny && chAny.threads && typeof chAny.threads.create === "function") {
-              if (parentMsg && parentMsg.id) {
-                thread = await chAny.threads.create({
-                  name: searchingThreadName,
-                  autoArchiveDuration: 60,
-                  startMessage: parentMsg.id,
-                });
-              } else {
-                thread = await chAny.threads.create({ name: searchingThreadName, autoArchiveDuration: 60 });
-              }
-            }
-          } catch (err) {
-            logger.warn("Failed to create thread on channel; will post results in-channel instead", { error: err instanceof Error ? err.message : String(err) });
-            thread = null;
-          }
-        }
-
-        const resultLines = parsed.map((p) => `[${escapeTitle(p.title)}](${p.url})`);
-        try {
-          if (thread) {
-            await cmd.editReply(`✅ Search results for '${query}' are being posted in thread <#${thread.id}>.`);
-          } else {
-            const resultsContent = `✅ Search results for '${query}':\n\n${resultLines.join("\n\n")}`;
-            await cmd.editReply(resultsContent);
-          }
-        } catch {
-          // ignore
-        }
-
-        const summaryTasks: Promise<void>[] = [];
-
-        for (const p of parsed) {
-          // Post a lightweight placeholder message quickly so the UI reflects
-          // progress immediately. Generate the (potentially slow) summary in
-          // the background and update the posted message when ready. This
-          // prevents a slow summary generation from blocking the posting of
-          // subsequent results (which was causing the UI to "stall" at the
-          // third item).
-          const title = escapeTitle(p.title);
-          const formatSearchResultBody = (titleText: string, summaryText: string, urlText: string): string => {
-            const header = `**${titleText}**\n\n`;
-            const footer = `\n\n<${urlText}>`;
-            const maxContentLength = 1900;
-            const budget = Math.max(0, maxContentLength - header.length - footer.length);
-            let body = summaryText;
-            if (body.length > budget) {
-              body = `${body.slice(0, Math.max(0, budget - 3)).trimEnd()}...`;
-            }
-            return `${header}${body}${footer}`;
-          };
-
-          const placeholderBody = formatSearchResultBody(title, "_Generating summary..._", p.url);
-
-          let postedMessage: any = null;
-          try {
-            if (thread) {
-              postedMessage = await thread.send(placeholderBody);
-            } else if (typeof cmd.followUp === "function") {
-              postedMessage = await cmd.followUp({ content: placeholderBody } as any);
-            } else {
-              // Fallback: post as an edit to the original reply if followUp
-              // is not available in this environment.
-              try {
-                await cmd.editReply(placeholderBody);
-              } catch {
-                // ignore
-              }
-            }
-          } catch (err) {
-            logger.warn("Failed to post search result placeholder", { error: err instanceof Error ? err.message : String(err) });
-          }
-
-          // Kick off summary generation in background so slow summaries don't
-          // block the main loop. We track tasks to set the final thread title
-          // once all summaries have completed.
-          const task = (async () => {
-            let summaryResult: { success: true; summary: string } | { success: false; error: string };
-            try {
-              summaryResult = await generateSummaryWithRetry(p.url, {
-                channelId: cmd.channelId ?? "",
-                messageId: String(cmd.id),
-                authorId: cmd.user?.id ?? "",
-                timeoutMs: 20000,
-                maxAttempts: 1,
-              });
-            } catch (err) {
-              summaryResult = { success: false, error: String(err) };
-            }
-
-            const summaryText = summaryResult.success ? summaryResult.summary : `*Summary generation failed: ${summaryResult.error}*`;
-            const updatedBody = formatSearchResultBody(title, summaryText, p.url);
-
-            let posted = false;
-
-            try {
-              if (postedMessage && typeof postedMessage.edit === "function") {
-                await postedMessage.edit(updatedBody);
-                posted = true;
-              }
-            } catch (err) {
-              logger.warn("Failed to edit placeholder with search result summary", {
-                error: err instanceof Error ? err.message : String(err),
-                url: p.url,
-              });
-            }
-
-            if (!posted) {
-              try {
-                if (thread) {
-                  await thread.send(updatedBody);
-                  posted = true;
-                } else if (typeof cmd.followUp === "function") {
-                  await cmd.followUp({ content: updatedBody } as any);
-                  posted = true;
-                }
-              } catch (err) {
-                logger.warn("Failed to post search result summary fallback", {
-                  error: err instanceof Error ? err.message : String(err),
-                  url: p.url,
-                });
-              }
-            }
-
-            if (!posted && postedMessage && typeof postedMessage.edit === "function") {
-              try {
-                await postedMessage.edit(formatSearchResultBody(title, "*Summary unavailable right now. Please run `ob summary <url>` manually for this item.*", p.url));
-              } catch {
-                // ignore
-              }
-            }
-
-          })();
-          summaryTasks.push(task);
-        }
-
-        void (async () => {
-          await Promise.allSettled(summaryTasks);
-
-          try {
-            if (thread) {
-              await thread.setName(`Search results for '${query}'`);
-            }
-          } catch {
-            // ignore
-          }
-
-          try {
-            if (!thread) {
-              await cmd.editReply(`✅ Search results for '${query}':`);
-            }
-          } catch {
-            // ignore
-          }
-        })();
-      } catch (error) {
-        if (error instanceof CliRunnerError) {
-          await cmd.reply({ content: "⚠️ Search failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
-        } else {
-          await cmd.reply({ content: "⚠️ An unexpected error occurred while performing the search.", ephemeral: true });
-        }
-      }
-
+      await handleSearchCommand(cmd);
       return;
     }
 
     // Handle /briefing
     if (commandName === "briefing") {
-      try {
-        const query = cmd.options.getString("query", true);
-        const k = cmd.options.getInteger("k");
-
-        await cmd.deferReply();
-
-        if (k !== null && (k < 1 || k > 50)) {
-          await cmd.editReply("⚠️ Briefing parameter `k` must be between 1 and 50.");
-          return;
-        }
-
-        if (!(await isCliAvailable())) {
-          await cmd.editReply("⚠️ Briefing failed because the OpenBrain CLI is unavailable.");
-          return;
-        }
-
-        const args = ["run", "--json", "--query", query];
-        if (k !== null) {
-          args.push("--k", String(k));
-        }
-
-        const result = await runCliCommand("briefing", args, {
-          channelId: cmd.channelId ?? undefined,
-          messageId: undefined,
-          authorId: cmd.user?.id,
-        });
-
-        if (result.exitCode !== 0) {
-          await cmd.editReply("❌ Briefing failed: CLI returned an error");
-          return;
-        }
-
-        if (result.stdout.length === 0) {
-          await cmd.editReply("No briefing output received.");
-          return;
-        }
-
-        const stdoutText = result.stdout.join("\n").trim();
-        let briefingText = stdoutText;
-
-        try {
-          const jsonOut = JSON.parse(stdoutText);
-          // Render JSON-first output into human-readable markdown rather than
-          // posting raw JSON to Discord.
-          briefingText = sharedRenderBriefingFromJson(jsonOut);
-        } catch {
-          // keep raw text
-        }
-
-        briefingText = sharedWrapMarkdownText(briefingText, MARKDOWN_WRAP_WIDTH_LOCAL);
-
-        await editReplyWithPossibleAttachment(
-          cmd,
-          `📝 Briefing for: \`${query}\``,
-          briefingText,
-          `briefing-${query.replace(/[^a-z0-9\-]/gi, "_")}.md`,
-          true // show Save briefing button
-        );
-
-        try {
-          const posted = (await cmd.fetchReply()) as any;
-          if (posted && typeof posted.id === "string") {
-            suppressEmbedsIfPermitted(posted as Message).catch(() => {});
-          }
-        } catch {
-          // ignore
-        }
-      } catch (error) {
-        if (error instanceof CliRunnerError) {
-          await cmd.reply({ content: "⚠️ Briefing failed because the OpenBrain CLI is unavailable or returned an error.", ephemeral: true });
-        } else {
-          await cmd.reply({ content: "⚠️ An unexpected error occurred while generating the briefing.", ephemeral: true });
-        }
-      }
-
+      await handleBriefingCommand(cmd);
       return;
     }
   },
   onMonitoredMessage: async (message) => {
     // Handle content queries
     if (isLikelyContentQuery(message.content)) {
-      await message.reply("Query functionality temporarily unavailable - CLI has been extracted to openBrain repository.");
+      await message.reply(
+        "Query functionality temporarily unavailable - CLI has been extracted to openBrain repository."
+      );
       return;
     }
-    
+
     logger.info("Received monitored channel message", {
       messageId: message.id,
-      authorId: message.author.id
+      authorId: message.author.id,
     });
-    
-    // Handle inline `ob add <text>` message triggers. This allows users to
-    // paste raw text and instruct the bot to ingest it via the OpenBrain CLI.
-    try {
-      // Match either `ob add <text>` or a bare `ob add` (so users can reply
-      // to an existing message with `ob add`). Capture group 1 is the
-      // optional inline payload when provided.
-      const obAddMatch =
-        typeof message.content === "string" &&
-        message.content.match(/^\s*ob\s+add(?:\s+([\s\S]*))?$/i);
-      if (obAddMatch) {
-      let payload = String(obAddMatch[1] || "").trim();
 
-      // If payload is empty, attempt to use the referenced/replied-to message's
-      // content or a text attachment on the referenced message (or the same
-      // message for the inline-attachment case).
-      let fetchRefFailed = false;
-      let refMsg: any = null;
-      if (!payload && message.reference && (message.reference as any).messageId) {
-        try {
-          const refId = (message.reference as any).messageId;
-          const chAny = message.channel as any;
-          if (chAny && chAny.messages && typeof chAny.messages.fetch === "function") {
-            refMsg = await chAny.messages.fetch(refId);
-            payload = (refMsg?.content || "").trim();
-          }
-        } catch (err) {
-          fetchRefFailed = true;
-          logger.warn("Failed to fetch referenced message for ob add", {
-            messageId: message.id,
-            referencedMessageId: (message.reference as any).messageId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+    // Handle inline `ob add <text>` message triggers
+    const handled = await handleObAddCommand(message);
+    if (handled) return;
 
-      // If we still don't have payload, check for attachments on the referenced
-      // message (if available) or the current message (inline attachment).
-      if (!payload) {
-        const atts: any = refMsg?.attachments || (message as any).attachments;
-        if (atts && atts.size && atts.size > 0) {
-          const att = atts.first();
-          // Basic filename-based validation for likely text files
-          const name = String(att?.name || "").toLowerCase();
-          const allowedExts = [".md", ".markdown", ".txt"];
-          const hasTextExt = allowedExts.some((e) => name.endsWith(e));
-
-          try {
-            // Fetch the attachment and validate content type / size
-            const resp = await fetch(att.url);
-            if (!resp || !resp.ok) {
-              // Fall back to replying with original message content if present
-              payload = (refMsg?.content || "").trim() || (message as any).content || "";
-            } else {
-              const contentType = resp.headers && typeof resp.headers.get === "function" ? resp.headers.get("content-type") : null;
-              const contentLength = resp.headers && typeof resp.headers.get === "function" ? resp.headers.get("content-length") : null;
-
-              // If filename looks like text or Content-Type indicates text/*, accept.
-              if (!hasTextExt && contentType && !contentType.startsWith("text/")) {
-                await message.reply("\u26a0\ufe0f The referenced attachment does not appear to be a text file (unsupported Content-Type). Please provide a .md or .txt file or paste the text directly.");
-                return;
-              }
-
-              // If Content-Length header claims it's too big, reject early
-              const MAX_ADD_BYTES = Number(process.env.OB_ADD_MAX_BYTES || 64 * 1024);
-              if (contentLength && /^\d+$/.test(String(contentLength)) && Number(contentLength) > MAX_ADD_BYTES) {
-                logger.warn("ob add attachment too large (content-length)", { messageId: message.id, size: Number(contentLength), max: MAX_ADD_BYTES });
-                await message.reply(`\u26a0\ufe0f Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`);
-                return;
-              }
-
-              // Read attachment body as text and enforce size limit
-              const textBody = await resp.text();
-              if (Buffer.byteLength(textBody, "utf8") > MAX_ADD_BYTES) {
-                logger.warn("ob add attachment too large (body)", { messageId: message.id, size: Buffer.byteLength(textBody, "utf8"), max: MAX_ADD_BYTES });
-                await message.reply(`\u26a0\ufe0f Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`);
-                return;
-              }
-
-              payload = textBody.trim();
-            }
-          } catch (err) {
-            logger.warn("Failed to fetch attachment for ob add", { messageId: message.id, url: att?.url, error: err instanceof Error ? err.message : String(err) });
-            // If fetching the referenced message failed earlier, inform the user
-            if (fetchRefFailed) {
-              await message.reply("\u26a0\ufe0f I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again.");
-              return;
-            }
-            // Otherwise fall through to ask for text
-            payload = (refMsg?.content || "").trim() || (message as any).content || "";
-          }
-        }
-      }
-
-      if (!payload) {
-        if (fetchRefFailed) {
-          // Inform the user the bot couldn't fetch the referenced message so
-          // they know to either paste the text or check channel permissions.
-          await message.reply(
-            "\u26a0\ufe0f I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again."
-          );
-        } else {
-          await message.reply("\u274c Please provide text to add, for example: `ob add <text>` or reply to a message with `ob add`.");
-        }
-        return;
-      }
-
-        // Enforce a conservative size limit to avoid large payload abuse. Default
-        // to 64KB but allow overriding via environment for tests or special hosts.
-        const MAX_ADD_BYTES = Number(process.env.OB_ADD_MAX_BYTES || 64 * 1024);
-      if (Buffer.byteLength(payload, "utf8") > MAX_ADD_BYTES) {
-        logger.warn("ob add payload too large", { messageId: message.id, size: Buffer.byteLength(payload, "utf8"), max: MAX_ADD_BYTES });
-        await message.reply(`\u26a0\ufe0f Text too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the text into smaller pieces.`);
-        return;
-      }
-
-      // Check CLI availability before creating temporary files
-      if (!(await checkCliAvailability(message))) {
-        logger.warn("ob add requested but CLI unavailable", { messageId: message.id });
-        return;
-      }
-
-        // Write payload to a secure temporary file and invoke the existing
-        // threaded progress flow by passing a file:// URL to the add command.
-        const { makeTempFileName } = await import("./discord/utils.js");
-        const fs = await import("fs/promises");
-        const tmpName = makeTempFileName("ob-add", "txt");
-
-        try {
-          await fs.writeFile(tmpName, payload, { encoding: "utf8", mode: 0o600 });
-        } catch (err) {
-          logger.error("Failed to write temporary file for ob add", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-          await message.reply("\u274c Failed to prepare temporary file for ingestion. Please try again or report this to the maintainers.");
-          return;
-        }
-
-        const fileUrl = pathToFileURL(tmpName).toString();
-
-      try {
-        try {
-          await processUrlWithProgress(message, fileUrl);
-        } catch (err) {
-          // processUrlWithProgress performs a lot of its own error handling
-          // but be defensive here in case it throws unexpectedly.
-          logger.error("Error during ob add processing", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-          try {
-            await message.reply("\u274c Failed to ingest text — an internal error occurred. Please try again later.");
-          } catch {
-            // ignore reply failures
-          }
-          throw err;
-        }
-      } finally {
-        try {
-          await fs.unlink(tmpName).catch(() => {});
-        } catch {
-          // best-effort cleanup
-        }
-      }
-
-        return;
-      }
-    } catch (err) {
-      // Defensive: ensure any unexpected error during ob add handling does not
-      // prevent processing of other message types.
-      logger.warn("Error while attempting to handle ob add message", { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
-    }
-    
     // Handle crawl commands
-    const crawl = crawlCommandHandler.parse(message.content);
-    if (crawl.isCrawlCommand) {
-      logger.info("Crawl command detected", { messageId: message.id });
-
-      const seed = crawl.seedUrl;
-      if (!seed) {
-        await message.reply(formatMissingCrawlSeedMessage());
-        return;
-      }
-
-      // Check CLI availability before queueing
-      if (!(await checkCliAvailability(message))) {
-        return;
-      }
-      
-      // Add processing reaction and post a queue status message using QueuePresenter
-      await addReaction(message, PROCESSING_REACTION);
-
-      let statusKey = `queue:${message.id}:${seed}`;
-      try {
-        // Post an initial queued status message (best-effort)
-        await queuePresenter.createOrUpdateStatus(statusKey, message, queuePresenter.formatQueueStatusMessage({ processing: true, url: seed }));
-
-        const queueResult = await crawlCommandHandler.queueSeed(message, seed);
-
-        if (queueResult.success) {
-          // Remove processing reaction and add success reaction
-          await removeReaction(message, PROCESSING_REACTION);
-          await addReaction(message, SUCCESS_REACTION);
-
-          // Update the status message to indicate queued/success
-          await queuePresenter.createOrUpdateStatus(statusKey, message, queuePresenter.formatQueueStatusMessage({ position: 0, total: 0, url: seed, note: "Queued" }));
-
-          // Wrap in code ticks to avoid Discord creating an embed in the reply
-          await message.reply(formatQueuedUrlMessage(seed));
-        } else {
-          // Remove processing reaction and add failure reaction
-          await removeReaction(message, PROCESSING_REACTION);
-          await addReaction(message, FAILURE_REACTION);
-
-          // Update or clear the status and reply with failure message
-          await queuePresenter.createOrUpdateStatus(statusKey, message, queuePresenter.formatQueueStatusMessage({ url: seed, note: `Failed: ${queueResult.error}` }));
-          await message.reply(formatQueueFailureMessage(queueResult.error, CLI_UNAVAILABLE_MESSAGE));
-        }
-      } catch (error) {
-        // Remove processing reaction and add failure reaction
-        await removeReaction(message, PROCESSING_REACTION);
-        await addReaction(message, FAILURE_REACTION);
-
-        // Record CLI-origin errors and attempt to post diagnostic reports as before
-        if (error instanceof CliRunnerError) {
-          logger.error("CLI error during queue command", {
-            messageId: message.id,
-            url: seed,
-            exitCode: error.exitCode,
-            stderr: error.stderr,
-          });
-
-          try {
-            const cmd = `queue ${seed}`;
-            const report = buildCliErrorReport({
-              command: cmd,
-              args: [],
-              exitCode: error.exitCode,
-              stderr: error.stderr,
-              spawnError: error.message,
-              note: "Observed during user-invoked queue command",
-            });
-
-            if (typeof message.startThread === "function") {
-              try {
-                const t = await message.startThread({ name: `CLI error: ${new URL(seed).hostname}`, autoArchiveDuration: 60 });
-                await postCliErrorReport(t, report, "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report.");
-                await t.setArchived(true).catch(() => {});
-              } catch (threadErr) {
-                logger.warn("Failed to create thread for CLI queue error; falling back to reply", { error: threadErr instanceof Error ? threadErr.message : String(threadErr) });
-                await postCliErrorReport(message, report, "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report.");
-              }
-            } else {
-              await postCliErrorReport(message, report, "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report.");
-            }
-          } catch (err) {
-            logger.warn("Failed to post detailed CLI error report for queue command", { error: err instanceof Error ? err.message : String(err) });
-            await message.reply(`❌ Failed to queue URL\n\n${CLI_UNAVAILABLE_MESSAGE}`);
-          }
-        } else {
-          throw error;
-        }
-      } finally {
-        // Ensure we clear the temporary status message to avoid stale messages
-        try {
-          await queuePresenter.clearStatus(statusKey);
-        } catch {
-          // ignore
-        }
-      }
-
-      return;
-    }
+    const handledCrawl = await handleCrawlCommand(message);
+    if (handledCrawl) return;
 
     // Extract URLs from message using shared utility
-    const urls = sharedExtractUrls(message.content);
+    const urls = extractUrls(message.content);
     if (urls.length > 0) {
       logger.info("Found URLs in message", { urls, messageId: message.id });
 
       // Check CLI availability before processing URLs
-      if (!(await checkCliAvailability(message))) {
+      if (!(await checkCliAvailability(message, isCliAvailable, logger))) {
         return;
       }
-      
+
       // Add URLs using CLI runner with threaded progress updates
       for (const url of urls) {
-        await processUrlWithProgress(message, url);
+        await processUrlWithProgress(message, url, {
+          logger,
+          sendSummaryOnInsert: config.SEND_SUMMARY_ON_INSERT,
+        });
       }
     }
-  }
+  },
 });
+
+// ============================================================================
+// Command Handlers
+// ============================================================================
+
+/**
+ * Handle the /search command
+ */
+async function handleSearchCommand(
+  cmd: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    const query = cmd.options.getString("query", true);
+    const limit = cmd.options.getInteger("limit") || 5;
+
+    await cmd.deferReply();
+
+    const clamped = Math.max(1, Math.min(20, limit));
+    const args = ["--json", "--limit", String(clamped), query];
+
+    const result = await runCliCommand("search", args, {
+      channelId: cmd.channelId ?? undefined,
+      messageId: undefined,
+      authorId: cmd.user?.id,
+    });
+
+    if (result.exitCode !== 0) {
+      await cmd.editReply("❌ Search failed: CLI returned an error");
+      return;
+    }
+
+    if (result.stdout.length === 0) {
+      await cmd.editReply("No results found.");
+      return;
+    }
+
+    const parsed = parseSearchResults(result.stdout, clamped);
+
+    // Start a thread off the original bot reply and post each result
+    let parentMsg: Message | null = null;
+    try {
+      parentMsg = (await cmd.fetchReply()) as Message;
+    } catch {
+      // ignore
+    }
+
+    let thread: ThreadChannel | null = null;
+    const searchingThreadName = `Searching for '${query}'...`;
+    if (parentMsg && typeof (parentMsg as any).startThread === "function") {
+      try {
+        thread = await (parentMsg as any).startThread({
+          name: searchingThreadName,
+          autoArchiveDuration: 60,
+        });
+      } catch (err) {
+        logger.warn("Failed to start thread from reply", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    if (!thread) {
+      try {
+        const chAny = cmd.channel as any;
+        if (chAny && chAny.threads && typeof chAny.threads.create === "function") {
+          if (parentMsg && parentMsg.id) {
+            thread = await chAny.threads.create({
+              name: searchingThreadName,
+              autoArchiveDuration: 60,
+              startMessage: parentMsg.id,
+            });
+          } else {
+            thread = await chAny.threads.create({
+              name: searchingThreadName,
+              autoArchiveDuration: 60,
+            });
+          }
+        }
+      } catch (err) {
+        logger.warn(
+          "Failed to create thread on channel; will post results in-channel instead",
+          { error: err instanceof Error ? err.message : String(err) }
+        );
+        thread = null;
+      }
+    }
+
+    const resultLines = parsed.map(
+      (p) => `[${escapeTitle(p.title)}](${p.url})`
+    );
+    try {
+      if (thread) {
+        await cmd.editReply(
+          `✅ Search results for '${query}' are being posted in thread <#${thread.id}>.`
+        );
+      } else {
+        const resultsContent = `✅ Search results for '${query}':\n\n${resultLines.join(
+          "\n\n"
+        )}`;
+        await cmd.editReply(resultsContent);
+      }
+    } catch {
+      // ignore
+    }
+
+    // Post search results with summaries
+    await postSearchResults(cmd, thread, parsed, query);
+  } catch (error) {
+    if (error instanceof CliRunnerError) {
+      await cmd.reply({
+        content:
+          "⚠️ Search failed because the OpenBrain CLI is unavailable or returned an error.",
+        ephemeral: true,
+      });
+    } else {
+      await cmd.reply({
+        content:
+          "⚠️ An unexpected error occurred while performing the search.",
+        ephemeral: true,
+      });
+    }
+  }
+}
+
+/**
+ * Parse search results from CLI output
+ */
+function parseSearchLines(
+  lines: string[],
+  limit: number
+): { title: string; url: string }[] {
+  return lines
+    .map((l) => parseSearchLine(l))
+    .filter((v): v is { title: string; url: string } => !!v)
+    .slice(0, limit);
+}
+
+function parseSearchLine(line: string): { title: string; url: string } | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  try {
+    const obj = JSON.parse(trimmed);
+    if (obj && typeof obj === "object") {
+      const url = (obj.url || obj.link || obj.href) as string | undefined;
+      const title = (obj.title || obj.name || obj.text) as string | undefined;
+      if (url) return { title: title || url, url };
+    }
+  } catch {
+    // ignore
+  }
+
+  const urlMatch = trimmed.match(/https?:\/\/[^\s<>"{}|\\^`[\]]+/i);
+  const url = urlMatch ? urlMatch[0] : null;
+  if (!url) return null;
+
+  let remainder = trimmed.replace(url, "").trim();
+  const delimiterRegex = /[|│┃║┆┊╎╏\u2500-\u257F]+/;
+  if (delimiterRegex.test(remainder)) {
+    const cells = remainder
+      .split(delimiterRegex)
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (cells.length > 0) {
+      let title: string | null = null;
+      for (const c of cells) {
+        const cell = String(c).trim();
+        if (!cell) continue;
+        if (/^\d+(?:\.\d+)?%?$/.test(cell)) continue;
+        try {
+          if (/\p{L}/u.test(cell)) {
+            title = cell;
+            break;
+          }
+        } catch {
+          if (/[A-Za-z]/.test(cell)) {
+            title = cell;
+            break;
+          }
+        }
+        if (!title) title = cell;
+      }
+
+      let titleStr = title || url;
+      titleStr = titleStr.replace(/\s*\d+(?:\.\d+)?%?$/g, "").trim();
+      titleStr = titleStr
+        .replace(/[│┃║┆┊╎╏\u2500-\u257F]/g, "")
+        .replace(/\|/g, " ")
+        .trim();
+      if (!titleStr) titleStr = url;
+      return { title: titleStr, url };
+    }
+  }
+
+  remainder = remainder
+    .replace(/\(.*?relevance.*?\)/i, "")
+    .replace(/\(\s*[0-9.]+\s*\)/, "")
+    .trim();
+  remainder = remainder
+    .replace(/(?:\|)?\s*(?:relevance[:\s]*\d+(?:\.\d+)?|\d+(?:\.\d+)?)\s*$/i, "")
+    .trim();
+  remainder = remainder
+    .replace(/^[\-–—\|:]+\s*/, "")
+    .replace(/\s+[\-–—\|:]+$/, "")
+    .trim();
+
+  let title = remainder.replace(/\|/g, " ").trim();
+  if (!title) title = url;
+  return { title, url };
+}
+
+function parseSearchResults(
+  stdout: string[],
+  clamped: number
+): { title: string; url: string }[] {
+  const stdoutText = stdout.join("\n").trim();
+
+  try {
+    const jsonOut = JSON.parse(stdoutText);
+    let items: any[] = [];
+
+    if (Array.isArray(jsonOut)) {
+      items = jsonOut;
+    } else if (jsonOut && typeof jsonOut === "object") {
+      if (Array.isArray(jsonOut.results)) items = jsonOut.results;
+      else if (Array.isArray(jsonOut.hits)) items = jsonOut.hits;
+      else if (Array.isArray(jsonOut.items)) items = jsonOut.items;
+      else if (Array.isArray(jsonOut.rows)) items = jsonOut.rows;
+      else {
+        const arrProp = Object.keys(jsonOut).find((k) =>
+          Array.isArray((jsonOut as any)[k])
+        );
+        if (arrProp) items = (jsonOut as any)[arrProp];
+      }
+    }
+
+    return items
+      .map((obj) => {
+        if (!obj || typeof obj !== "object") return null;
+        const url = obj.url || obj.link || obj.href;
+        let title = obj.title || obj.name || obj.text;
+        if (!url) return null;
+        if (!title || typeof title !== "string") title = url;
+        return { title: String(title).trim(), url: String(url).trim() };
+      })
+      .filter((v): v is { title: string; url: string } => !!v)
+      .slice(0, clamped);
+  } catch (e) {
+    return parseSearchLines(stdout, clamped);
+  }
+}
+
+function escapeTitle(s: string): string {
+  if (!s) return s;
+  let t = String(s).replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+  t = t.replace(/\]/g, "\\]");
+  return t;
+}
+
+/**
+ * Post search results to thread with summaries
+ */
+async function postSearchResults(
+  cmd: ChatInputCommandInteraction,
+  thread: ThreadChannel | null,
+  parsed: { title: string; url: string }[],
+  query: string
+): Promise<void> {
+  const summaryTasks: Promise<void>[] = [];
+
+  for (const p of parsed) {
+    const title = escapeTitle(p.title);
+    const formatSearchResultBody = (
+      titleText: string,
+      summaryText: string,
+      urlText: string
+    ): string => {
+      const header = `**${titleText}**\n\n`;
+      const footer = `\n\n<${urlText}>`;
+      const maxContentLength = 1900;
+      const budget = Math.max(0, maxContentLength - header.length - footer.length);
+      let body = summaryText;
+      if (body.length > budget) {
+        body = `${body.slice(0, Math.max(0, budget - 3)).trimEnd()}...`;
+      }
+      return `${header}${body}${footer}`;
+    };
+
+    const placeholderBody = formatSearchResultBody(
+      title,
+      "_Generating summary..._",
+      p.url
+    );
+
+    let postedMessage: any = null;
+    try {
+      if (thread) {
+        postedMessage = await thread.send(placeholderBody);
+      } else if (typeof cmd.followUp === "function") {
+        postedMessage = await cmd.followUp({ content: placeholderBody } as any);
+      } else {
+        try {
+          await cmd.editReply(placeholderBody);
+        } catch {
+          // ignore
+        }
+      }
+    } catch (err) {
+      logger.warn("Failed to post search result placeholder", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const task = (async () => {
+      let summaryResult: { success: true; summary: string } | { success: false; error: string };
+      try {
+        summaryResult = await generateSummaryWithRetry(
+          p.url,
+          {
+            channelId: cmd.channelId ?? "",
+            messageId: String(cmd.id),
+            authorId: cmd.user?.id ?? "",
+            timeoutMs: 20000,
+            maxAttempts: 1,
+          },
+          logger
+        );
+      } catch (err) {
+        summaryResult = { success: false, error: String(err) };
+      }
+
+      const summaryText = summaryResult.success
+        ? summaryResult.summary
+        : `*Summary generation failed: ${summaryResult.error}*`;
+      const updatedBody = formatSearchResultBody(title, summaryText, p.url);
+
+      let posted = false;
+
+      try {
+        if (postedMessage && typeof postedMessage.edit === "function") {
+          await postedMessage.edit(updatedBody);
+          posted = true;
+        }
+      } catch (err) {
+        logger.warn("Failed to edit placeholder with search result summary", {
+          error: err instanceof Error ? err.message : String(err),
+          url: p.url,
+        });
+      }
+
+      if (!posted) {
+        try {
+          if (thread) {
+            await thread.send(updatedBody);
+            posted = true;
+          } else if (typeof cmd.followUp === "function") {
+            await cmd.followUp({ content: updatedBody } as any);
+            posted = true;
+          }
+        } catch (err) {
+          logger.warn("Failed to post search result summary fallback", {
+            error: err instanceof Error ? err.message : String(err),
+            url: p.url,
+          });
+        }
+      }
+
+      if (!posted && postedMessage && typeof postedMessage.edit === "function") {
+        try {
+          await postedMessage.edit(
+            formatSearchResultBody(
+              title,
+              "*Summary unavailable right now. Please run `ob summary <url>` manually for this item.*",
+              p.url
+            )
+          );
+        } catch {
+          // ignore
+        }
+      }
+    })();
+    summaryTasks.push(task);
+  }
+
+  void (async () => {
+    await Promise.allSettled(summaryTasks);
+
+    try {
+      if (thread) {
+        await thread.setName(`Search results for '${query}'`);
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (!thread) {
+        await cmd.editReply(`✅ Search results for '${query}':`);
+      }
+    } catch {
+      // ignore
+    }
+  })();
+}
+
+/**
+ * Handle the /briefing command
+ */
+async function handleBriefingCommand(
+  cmd: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    const query = cmd.options.getString("query", true);
+    const k = cmd.options.getInteger("k");
+
+    await cmd.deferReply();
+
+    if (k !== null && (k < 1 || k > 50)) {
+      await cmd.editReply("⚠️ Briefing parameter `k` must be between 1 and 50.");
+      return;
+    }
+
+    if (!(await isCliAvailable())) {
+      await cmd.editReply(
+        "⚠️ Briefing failed because the OpenBrain CLI is unavailable."
+      );
+      return;
+    }
+
+    const args = ["run", "--json", "--query", query];
+    if (k !== null) {
+      args.push("--k", String(k));
+    }
+
+    const result = await runCliCommand("briefing", args, {
+      channelId: cmd.channelId ?? undefined,
+      messageId: undefined,
+      authorId: cmd.user?.id,
+    });
+
+    if (result.exitCode !== 0) {
+      await cmd.editReply("❌ Briefing failed: CLI returned an error");
+      return;
+    }
+
+    if (result.stdout.length === 0) {
+      await cmd.editReply("No briefing output received.");
+      return;
+    }
+
+    const stdoutText = result.stdout.join("\n").trim();
+    let briefingText = stdoutText;
+
+    try {
+      const jsonOut = JSON.parse(stdoutText);
+      briefingText = renderBriefingFromJson(jsonOut);
+    } catch {
+      // keep raw text
+    }
+
+    briefingText = wrapMarkdownText(briefingText, MARKDOWN_WRAP_WIDTH_LOCAL);
+
+    await editReplyWithPossibleAttachment(
+      cmd,
+      `📝 Briefing for: \`${query}\``,
+      briefingText,
+      `briefing-${query.replace(/[^a-z0-9\-]/gi, "_")}.md`,
+      true // show Save briefing button
+    );
+
+    try {
+      const posted = (await cmd.fetchReply()) as any;
+      if (posted && typeof posted.id === "string") {
+        const { suppressEmbedsIfPermitted } = await import("./bot/utils.js");
+        suppressEmbedsIfPermitted(posted as Message, logger).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+  } catch (error) {
+    if (error instanceof CliRunnerError) {
+      await cmd.reply({
+        content:
+          "⚠️ Briefing failed because the OpenBrain CLI is unavailable or returned an error.",
+        ephemeral: true,
+      });
+    } else {
+      await cmd.reply({
+        content:
+          "⚠️ An unexpected error occurred while generating the briefing.",
+        ephemeral: true,
+      });
+    }
+  }
+}
+
+// ============================================================================
+// Message Command Handlers
+// ============================================================================
+
+/**
+ * Handle `ob add` command from message
+ * @returns true if handled, false otherwise
+ */
+async function handleObAddCommand(message: Message): Promise<boolean> {
+  try {
+    const obAddMatch =
+      typeof message.content === "string" &&
+      message.content.match(/^\s*ob\s+add(?:\s+([\s\S]*))?$/i);
+
+    if (!obAddMatch) {
+      return false;
+    }
+
+    let payload = String(obAddMatch[1] || "").trim();
+
+    // If payload is empty, attempt to use the referenced/replied-to message
+    let fetchRefFailed = false;
+    let refMsg: any = null;
+    if (!payload && message.reference && (message.reference as any).messageId) {
+      try {
+        const refId = (message.reference as any).messageId;
+        const chAny = message.channel as any;
+        if (chAny && chAny.messages && typeof chAny.messages.fetch === "function") {
+          refMsg = await chAny.messages.fetch(refId);
+          payload = (refMsg?.content || "").trim();
+        }
+      } catch (err) {
+        fetchRefFailed = true;
+        logger.warn("Failed to fetch referenced message for ob add", {
+          messageId: message.id,
+          referencedMessageId: (message.reference as any).messageId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Check for attachments on referenced message or current message
+    if (!payload) {
+      const atts: any = refMsg?.attachments || (message as any).attachments;
+      if (atts && atts.size && atts.size > 0) {
+        const att = atts.first();
+        const name = String(att?.name || "").toLowerCase();
+        const allowedExts = [".md", ".markdown", ".txt"];
+        const hasTextExt = allowedExts.some((e) => name.endsWith(e));
+
+        try {
+          const resp = await fetch(att.url);
+          if (!resp || !resp.ok) {
+            payload = (refMsg?.content || "").trim() || (message as any).content || "";
+          } else {
+            const contentType =
+              resp.headers && typeof resp.headers.get === "function"
+                ? resp.headers.get("content-type")
+                : null;
+            const contentLength =
+              resp.headers && typeof resp.headers.get === "function"
+                ? resp.headers.get("content-length")
+                : null;
+
+            if (!hasTextExt && contentType && !contentType.startsWith("text/")) {
+              await message.reply(
+                "⚠️ The referenced attachment does not appear to be a text file (unsupported Content-Type). Please provide a .md or .txt file or paste the text directly."
+              );
+              return true;
+            }
+
+            const MAX_ADD_BYTES = Number(process.env.OB_ADD_MAX_BYTES || 64 * 1024);
+            if (
+              contentLength &&
+              /^\d+$/.test(String(contentLength)) &&
+              Number(contentLength) > MAX_ADD_BYTES
+            ) {
+              logger.warn("ob add attachment too large (content-length)", {
+                messageId: message.id,
+                size: Number(contentLength),
+                max: MAX_ADD_BYTES,
+              });
+              await message.reply(
+                `⚠️ Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`
+              );
+              return true;
+            }
+
+            const textBody = await resp.text();
+            if (Buffer.byteLength(textBody, "utf8") > MAX_ADD_BYTES) {
+              logger.warn("ob add attachment too large (body)", {
+                messageId: message.id,
+                size: Buffer.byteLength(textBody, "utf8"),
+                max: MAX_ADD_BYTES,
+              });
+              await message.reply(
+                `⚠️ Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`
+              );
+              return true;
+            }
+
+            payload = textBody.trim();
+          }
+        } catch (err) {
+          logger.warn("Failed to fetch attachment for ob add", {
+            messageId: message.id,
+            url: att?.url,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          if (fetchRefFailed) {
+            await message.reply(
+              "⚠️ I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again."
+            );
+            return true;
+          }
+          payload = (refMsg?.content || "").trim() || (message as any).content || "";
+        }
+      }
+    }
+
+    if (!payload) {
+      if (fetchRefFailed) {
+        await message.reply(
+          "⚠️ I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again."
+        );
+      } else {
+        await message.reply(
+          "❌ Please provide text to add, for example: `ob add <text>` or reply to a message with `ob add`."
+        );
+      }
+      return true;
+    }
+
+    // Enforce size limit
+    const MAX_ADD_BYTES = Number(process.env.OB_ADD_MAX_BYTES || 64 * 1024);
+    if (Buffer.byteLength(payload, "utf8") > MAX_ADD_BYTES) {
+      logger.warn("ob add payload too large", {
+        messageId: message.id,
+        size: Buffer.byteLength(payload, "utf8"),
+        max: MAX_ADD_BYTES,
+      });
+      await message.reply(
+        `⚠️ Text too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the text into smaller pieces.`
+      );
+      return true;
+    }
+
+    // Check CLI availability
+    if (!(await checkCliAvailability(message, isCliAvailable, logger))) {
+      logger.warn("ob add requested but CLI unavailable", { messageId: message.id });
+      return true;
+    }
+
+    // Write payload to temp file and process
+    const fs = await import("fs/promises");
+    const tmpName = makeTempFileName("ob-add", "txt");
+
+    try {
+      await fs.writeFile(tmpName, payload, { encoding: "utf8", mode: 0o600 });
+    } catch (err) {
+      logger.error("Failed to write temporary file for ob add", {
+        messageId: message.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await message.reply(
+        "❌ Failed to prepare temporary file for ingestion. Please try again or report this to the maintainers."
+      );
+      return true;
+    }
+
+    const fileUrl = pathToFileURL(tmpName).toString();
+
+    try {
+      try {
+        await processUrlWithProgress(message, fileUrl, {
+          logger,
+          sendSummaryOnInsert: config.SEND_SUMMARY_ON_INSERT,
+        });
+      } catch (err) {
+        logger.error("Error during ob add processing", {
+          messageId: message.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        try {
+          await message.reply(
+            "❌ Failed to ingest text — an internal error occurred. Please try again later."
+          );
+        } catch {
+          // ignore reply failures
+        }
+        throw err;
+      }
+    } finally {
+      try {
+        await fs.unlink(tmpName).catch(() => {});
+      } catch {
+        // best-effort cleanup
+      }
+    }
+
+    return true;
+  } catch (err) {
+    logger.warn("Error while attempting to handle ob add message", {
+      messageId: message.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/**
+ * Handle crawl command from message
+ * @returns true if handled, false otherwise
+ */
+async function handleCrawlCommand(message: Message): Promise<boolean> {
+  const crawl = crawlCommandHandler.parse(message.content);
+  if (!crawl.isCrawlCommand) {
+    return false;
+  }
+
+  logger.info("Crawl command detected", { messageId: message.id });
+
+  const seed = crawl.seedUrl;
+  if (!seed) {
+    await message.reply(formatMissingCrawlSeedMessage());
+    return true;
+  }
+
+  // Check CLI availability before queueing
+  if (!(await checkCliAvailability(message, isCliAvailable, logger))) {
+    return true;
+  }
+
+  // Add processing reaction and post a queue status message
+  await addReaction(message, PROCESSING_REACTION, logger);
+
+  let statusKey = `queue:${message.id}:${seed}`;
+  try {
+    // Post an initial queued status message (best-effort)
+    await queuePresenter.createOrUpdateStatus(
+      statusKey,
+      message,
+      queuePresenter.formatQueueStatusMessage({ processing: true, url: seed })
+    );
+
+    const queueResult = await crawlCommandHandler.queueSeed(message, seed);
+
+    if (queueResult.success) {
+      // Remove processing reaction and add success reaction
+      await removeReaction(message, PROCESSING_REACTION, logger);
+      await addReaction(message, SUCCESS_REACTION, logger);
+
+      // Update the status message to indicate queued/success
+      await queuePresenter.createOrUpdateStatus(
+        statusKey,
+        message,
+        queuePresenter.formatQueueStatusMessage({
+          position: 0,
+          total: 0,
+          url: seed,
+          note: "Queued",
+        })
+      );
+
+      // Wrap in code ticks to avoid Discord creating an embed
+      await message.reply(formatQueuedUrlMessage(seed));
+    } else {
+      // Remove processing reaction and add failure reaction
+      await removeReaction(message, PROCESSING_REACTION, logger);
+      await addReaction(message, FAILURE_REACTION, logger);
+
+      // Update or clear the status and reply with failure message
+      await queuePresenter.createOrUpdateStatus(
+        statusKey,
+        message,
+        queuePresenter.formatQueueStatusMessage({
+          url: seed,
+          note: `Failed: ${queueResult.error}`,
+        })
+      );
+      await message.reply(
+        formatQueueFailureMessage(queueResult.error, CLI_UNAVAILABLE_MESSAGE)
+      );
+    }
+  } catch (error) {
+    // Remove processing reaction and add failure reaction
+    await removeReaction(message, PROCESSING_REACTION, logger);
+    await addReaction(message, FAILURE_REACTION, logger);
+
+    // Record CLI-origin errors
+    if (error instanceof CliRunnerError) {
+      logger.error("CLI error during queue command", {
+        messageId: message.id,
+        url: seed,
+        exitCode: error.exitCode,
+        stderr: error.stderr,
+      });
+
+      try {
+        const cmd = `queue ${seed}`;
+        const report = buildCliErrorReport({
+          command: cmd,
+          args: [],
+          exitCode: error.exitCode,
+          stderr: error.stderr,
+          spawnError: error.message,
+          note: "Observed during user-invoked queue command",
+        });
+
+        if (typeof message.startThread === "function") {
+          try {
+            const t = await message.startThread({
+              name: `CLI error: ${new URL(seed).hostname}`,
+              autoArchiveDuration: 60,
+            });
+            await postCliErrorReport(
+              t,
+              report,
+              "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report."
+            );
+            await t.setArchived(true).catch(() => {});
+          } catch (threadErr) {
+            logger.warn(
+              "Failed to create thread for CLI queue error; falling back to reply",
+              {
+                error:
+                  threadErr instanceof Error
+                    ? threadErr.message
+                    : String(threadErr),
+              }
+            );
+            await postCliErrorReport(
+              message,
+              report,
+              "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report."
+            );
+          }
+        } else {
+          await postCliErrorReport(
+            message,
+            report,
+            "⚠️ CLI error encountered while queueing a URL. See attached diagnostic report."
+          );
+        }
+      } catch (err) {
+        logger.warn("Failed to post detailed CLI error report for queue command", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await message.reply(`❌ Failed to queue URL\n\n${CLI_UNAVAILABLE_MESSAGE}`);
+      }
+    } else {
+      throw error;
+    }
+  } finally {
+    // Ensure we clear the temporary status message
+    try {
+      await queuePresenter.clearStatus(statusKey);
+    } catch {
+      // ignore
+    }
+  }
+
+  return true;
+}
 
 // ============================================================================
 // Startup and Shutdown
@@ -2074,3 +1379,5 @@ void (async () => {
 // Export internals for testing
 export { processUrlWithProgress };
 export { lifecycleManager };
+export { handleObAddCommand, handleCrawlCommand };
+export { handleSearchCommand, handleBriefingCommand };

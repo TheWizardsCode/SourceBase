@@ -166,12 +166,12 @@ export async function processUrlWithProgress(
         })();
 
         try {
-          if (thread) {
-            await thread.send(safeProgressMsg);
-          } else {
-            await message.reply(safeProgressMsg);
-          }
+          // Use presenters-level sendWithFallback to centralise posting
+          // semantics. Pass the presenter's lastPostedMessage when available
+          // so edits are attempted before creating new follow-ups.
+          await sendWithFallback(thread ?? message, safeProgressMsg, logger, undefined);
         } catch (err2) {
+          // sendWithFallback is defensive and logs; still handle unexpected throws
           logger.warn("Failed to post progress update via fallback path", {
             messageId: message.id,
             error: err2 instanceof Error ? err2.message : String(err2),
@@ -302,22 +302,13 @@ async function handleSuccess(
     // Post a final success message if the completed phase wasn't already
     // observed via progress events.
     if (thread) {
-      try {
-        const posted = await sendWithFallback(thread, successMsg, logger, lastPostedMessage);
-        lastPostedMessage = posted ?? lastPostedMessage;
-        if (!posted) summaryTargetThread = null;
-      } catch (error) {
-        logger.warn(
-          "Failed to send final success message to thread; falling back to channel reply",
-          {
-            threadId: thread.id,
-            error: error instanceof Error ? error.message : String(error),
-          }
-        );
-        summaryTargetThread = null;
-      }
+      // Use presenters-level sendWithFallback which centralises the send/edit/channel.send
+      // fallback semantics and structured logging.
+      const posted = await sendWithFallback(thread, successMsg, logger, lastPostedMessage);
+      lastPostedMessage = posted ?? lastPostedMessage;
+      if (!posted) summaryTargetThread = null;
     } else {
-      const posted = await message.reply(successMsg);
+      const posted = await sendWithFallback(message, successMsg, logger, lastPostedMessage);
       lastPostedMessage = posted ?? lastPostedMessage;
     }
   } else {
@@ -335,15 +326,10 @@ async function handleSuccess(
           error: err instanceof Error ? err.message : String(err),
         });
         const appended = `\n\nOpenBrain item: <${itemLink}>\nItem ID: ${itemId}`;
-        try {
+          // Use the presenters helper to attempt edit then channel send. If the
+          // helper cannot post we log via its structured logger and continue.
           const contentToSend = (lastPostedMessage && typeof lastPostedMessage.content === "string" ? lastPostedMessage.content : successMsg) + appended;
           await sendWithFallback(thread ?? message, contentToSend, logger, lastPostedMessage);
-        } catch (err2) {
-          logger.warn("Failed to post item link follow-up", {
-            messageId: message.id,
-            error: err2 instanceof Error ? err2.message : String(err2),
-          });
-        }
       }
     } else {
       logger.debug(
@@ -432,7 +418,10 @@ async function handleCliError(
           report,
           "⚠️ CLI error encountered during processing. See attached diagnostic report."
         );
-        await thread.send(errorMsg);
+        // Prefer presenters-level helper for posting fallback text so that
+        // edit/reply/channel fallback semantics and structured logging are
+        // consistent across the codebase.
+        await sendWithFallback(thread, errorMsg, logger);
         await thread.setArchived(true).catch(() => {});
       } catch (sendError) {
         logger.warn(
@@ -442,19 +431,19 @@ async function handleCliError(
             error: sendError instanceof Error ? sendError.message : String(sendError),
           }
         );
-        try {
-          await postCliErrorReport(
-            message,
-            report,
-            "⚠️ CLI error encountered during processing. See attached diagnostic report."
-          );
-          await message.reply(errorMsg);
-        } catch (replyError) {
-          logger.warn("Failed to send fallback CLI error report reply", {
-            messageId: message.id,
-            error: replyError instanceof Error ? replyError.message : String(replyError),
-          });
-        }
+          try {
+            await postCliErrorReport(
+              message,
+              report,
+              "⚠️ CLI error encountered during processing. See attached diagnostic report."
+            );
+            await sendWithFallback(message, errorMsg, logger);
+          } catch (replyError) {
+            logger.warn("Failed to send fallback CLI error report reply", {
+              messageId: message.id,
+              error: replyError instanceof Error ? replyError.message : String(replyError),
+            });
+          }
       }
     } else {
       const t = await createThreadForMessage(
@@ -470,7 +459,7 @@ async function handleCliError(
             report,
             "⚠️ CLI error encountered during processing. See attached diagnostic report."
           );
-          await t.send(errorMsg);
+          await sendWithFallback(t, errorMsg, logger);
           await t.setArchived(true).catch(() => {});
         } catch (threadErr) {
           logger.warn(
@@ -481,34 +470,34 @@ async function handleCliError(
               error: threadErr instanceof Error ? threadErr.message : String(threadErr),
             }
           );
+            try {
+              await postCliErrorReport(
+                message,
+                report,
+                "⚠️ CLI error encountered during processing. See attached diagnostic report."
+              );
+              await sendWithFallback(message, errorMsg, logger);
+            } catch (replyError) {
+              logger.warn("Failed to reply with CLI error report", {
+                messageId: message.id,
+                error: replyError instanceof Error ? replyError.message : String(replyError),
+              });
+            }
+        }
+      } else {
           try {
             await postCliErrorReport(
               message,
               report,
               "⚠️ CLI error encountered during processing. See attached diagnostic report."
             );
-            await message.reply(errorMsg);
+            await sendWithFallback(message, errorMsg, logger);
           } catch (replyError) {
-            logger.warn("Failed to reply with CLI error report", {
+            logger.warn("Failed to reply with CLI error report (no thread available)", {
               messageId: message.id,
               error: replyError instanceof Error ? replyError.message : String(replyError),
             });
           }
-        }
-      } else {
-        try {
-          await postCliErrorReport(
-            message,
-            report,
-            "⚠️ CLI error encountered during processing. See attached diagnostic report."
-          );
-          await message.reply(errorMsg);
-        } catch (replyError) {
-          logger.warn("Failed to reply with CLI error report (no thread available)", {
-            messageId: message.id,
-            error: replyError instanceof Error ? replyError.message : String(replyError),
-          });
-        }
       }
     }
   } catch (err) {
@@ -530,7 +519,7 @@ async function sendErrorMessage(
 ): Promise<void> {
   if (thread) {
     try {
-      await thread.send(errorMsg);
+      await sendWithFallback(thread, errorMsg, logger);
       await thread.setArchived(true);
     } catch (error) {
       logger.warn(
@@ -540,17 +529,17 @@ async function sendErrorMessage(
           error: error instanceof Error ? error.message : String(error),
         }
       );
-      try {
-        await message.reply(errorMsg);
-      } catch (err) {
-        logger.warn("Failed to send fallback error reply to channel", {
-          messageId: message.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+        try {
+          await sendWithFallback(message, errorMsg, logger);
+        } catch (err) {
+          logger.warn("Failed to send fallback error reply to channel", {
+            messageId: message.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
     }
   } else {
-    await message.reply(errorMsg);
+    await sendWithFallback(message, errorMsg, logger);
   }
 }
 
@@ -577,9 +566,7 @@ async function handleNoResult(
   }
 
   try {
-    await message.reply(
-      "❌ Failed to add URL: internal error while processing the request. The CLI did not return a result."
-    );
+    await sendWithFallback(message, "❌ Failed to add URL: internal error while processing the request. The CLI did not return a result.", logger);
   } catch (err) {
     logger.warn("Failed to send fallback error reply when CLI returned no result", {
       messageId: message.id,
@@ -638,7 +625,8 @@ async function handleProcessingError(
       // Try to send to existing thread
       if (thread) {
         try {
-          await thread.send(report);
+          await postCliErrorReport(thread, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
+          await sendWithFallback(thread, errorMsg, logger);
           await thread.setArchived(true).catch(() => {});
         } catch (sendError) {
           logger.error("Failed to send CLI error report to thread", {
@@ -647,7 +635,8 @@ async function handleProcessingError(
           });
           // Fallback to channel reply
           try {
-            await message.reply(report);
+            await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
+            await sendWithFallback(message, errorMsg, logger);
           } catch (replyError) {
             logger.error("Failed to reply with CLI error report", {
               messageId: message.id,
@@ -662,26 +651,29 @@ async function handleProcessingError(
             name: `CLI error: ${new URL(url).hostname}`,
             autoArchiveDuration: 60,
           });
-          await t.send(report);
+          await postCliErrorReport(t, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
+          await sendWithFallback(t, errorMsg, logger);
           await t.setArchived(true).catch(() => {});
         } catch (threadErr) {
           logger.warn("Failed to create thread for CLI error report; falling back to reply", {
             messageId: message.id,
             error: threadErr instanceof Error ? threadErr.message : String(threadErr),
           });
-          try {
-            await message.reply(report);
-          } catch (replyError) {
-            logger.error("Failed to reply with CLI error report", {
-              messageId: message.id,
-              error: replyError instanceof Error ? replyError.message : String(replyError),
-            });
-          }
+            try {
+              await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
+              await sendWithFallback(message, errorMsg, logger);
+            } catch (replyError) {
+              logger.error("Failed to reply with CLI error report", {
+                messageId: message.id,
+                error: replyError instanceof Error ? replyError.message : String(replyError),
+              });
+            }
         }
       } else {
         // Last resort - reply in channel
         try {
-          await message.reply(report);
+          await postCliErrorReport(message, report, "⚠️ CLI error encountered during processing. See attached diagnostic report.");
+          await sendWithFallback(message, errorMsg, logger);
         } catch (replyError) {
           logger.error("Failed to reply with CLI error report (no thread available)", {
             messageId: message.id,
@@ -699,7 +691,7 @@ async function handleProcessingError(
   // Send a user-facing brief error message to the thread or channel
   if (thread) {
     try {
-      await thread.send(errorMsg);
+      await sendWithFallback(thread, errorMsg, logger);
       await thread.setArchived(true);
     } catch (sendError) {
       logger.error("Failed to send error message to thread", {
@@ -708,6 +700,6 @@ async function handleProcessingError(
       });
     }
   } else {
-    await message.reply(errorMsg);
+    await sendWithFallback(message, errorMsg, logger);
   }
 }

@@ -1,4 +1,5 @@
 import type { Logger } from "../log/index.js";
+import { sendWithFallback } from "../presenters/QueuePresenter.js";
 import type { Client, Message } from "discord.js";
 
 /**
@@ -250,7 +251,7 @@ export class LifecycleManager {
       const message = this.startupNotification.message
         ?? `🤖 Bot is now online${timestamp}`;
 
-      await channel.send(message);
+      await sendWithFallback(channel, message, this.logger);
       this.logger.info("Startup notification sent", {
         channelId: this.startupNotification.channelId,
       });

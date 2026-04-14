@@ -244,17 +244,8 @@ export async function sendGeneratedSummary(
       error: summaryResult.error,
     });
 
-    try {
-      await sendWithFallback(target, `⚠️ Failed to generate summary for <${addResult.url}> after ${SUMMARY_RETRY_ATTEMPTS} attempts. Marked for manual review.`, logger);
-    } catch (error) {
-      logger?.warn("Failed to send summary failure notice", {
-        messageId: message.id,
-        targetId: target.id,
-        url: addResult.url,
-        itemId: addResult.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    // Use presenters-level helper to centralise fallback semantics and logging
+    await sendWithFallback(target, `⚠️ Failed to generate summary for <${addResult.url}> after ${SUMMARY_RETRY_ATTEMPTS} attempts. Marked for manual review.`, logger);
     return;
   }
 
@@ -313,14 +304,12 @@ export async function sendGeneratedSummary(
   }
 
   // Attempt to post to the resolved target (thread preferred or fallback).
+    // Post the summary/snippet using the presenters helper which will attempt
+    // send -> edit -> channel.send according to available runtime capabilities.
     try {
       if (!isTooLong) {
         await sendWithFallback(target, fullText, logger);
       } else {
-        // When attaching files, use the target.send call directly because
-        // sendWithFallback expects a string body. As a pragmatic minimal
-        // change we attempt to send the snippetMessage and then separately
-        // attach the file to the original message where supported.
         await sendWithFallback(target, snippetMessage, logger);
         // Try best-effort attach when target supports send with files
         try {

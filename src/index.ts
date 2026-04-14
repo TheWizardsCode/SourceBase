@@ -30,7 +30,7 @@ import {
   formatQueueFailureMessage,
   formatQueuedUrlMessage,
 } from "./presenters/queue.js";
-import QueuePresenter from "./presenters/QueuePresenter.js";
+import QueuePresenter, { sendWithFallback } from "./presenters/QueuePresenter.js";
 import {
   runCliCommand,
   isCliAvailable,
@@ -428,8 +428,10 @@ const bot = new DiscordBot({
   onMonitoredMessage: async (message) => {
     // Handle content queries
     if (isLikelyContentQuery(message.content)) {
-      await message.reply(
-        "Query functionality temporarily unavailable - CLI has been extracted to openBrain repository."
+      await sendWithFallback(
+        message,
+        "Query functionality temporarily unavailable - CLI has been extracted to openBrain repository.",
+        logger
       );
       return;
     }
@@ -762,23 +764,23 @@ async function postSearchResults(
     );
 
     let postedMessage: any = null;
-    try {
-      if (thread) {
-        postedMessage = await thread.send(placeholderBody);
-      } else if (typeof cmd.followUp === "function") {
-        postedMessage = await cmd.followUp({ content: placeholderBody } as any);
-      } else {
-        try {
-          await cmd.editReply(placeholderBody);
-        } catch {
-          // ignore
+      try {
+        if (thread) {
+          postedMessage = await sendWithFallback(thread, placeholderBody, logger);
+        } else if (typeof cmd.followUp === "function") {
+          postedMessage = await cmd.followUp({ content: placeholderBody } as any);
+        } else {
+          try {
+            await cmd.editReply(placeholderBody);
+          } catch {
+            // ignore
+          }
         }
+      } catch (err) {
+        logger.warn("Failed to post search result placeholder", {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
-    } catch (err) {
-      logger.warn("Failed to post search result placeholder", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
 
     const task = (async () => {
       let summaryResult: { success: true; summary: string } | { success: false; error: string };
@@ -805,27 +807,27 @@ async function postSearchResults(
 
       let posted = false;
 
-      try {
-        if (postedMessage && typeof postedMessage.edit === "function") {
-          await postedMessage.edit(updatedBody);
-          posted = true;
-        }
-      } catch (err) {
-        logger.warn("Failed to edit placeholder with search result summary", {
-          error: err instanceof Error ? err.message : String(err),
-          url: p.url,
-        });
-      }
+          try {
+            if (postedMessage && typeof postedMessage.edit === "function") {
+              await postedMessage.edit(updatedBody);
+              posted = true;
+            }
+          } catch (err) {
+            logger.warn("Failed to edit placeholder with search result summary", {
+              error: err instanceof Error ? err.message : String(err),
+              url: p.url,
+            });
+          }
 
       if (!posted) {
         try {
-          if (thread) {
-            await thread.send(updatedBody);
-            posted = true;
-          } else if (typeof cmd.followUp === "function") {
-            await cmd.followUp({ content: updatedBody } as any);
-            posted = true;
-          }
+            if (thread) {
+              await sendWithFallback(thread, updatedBody, logger, postedMessage);
+              posted = true;
+            } else if (typeof cmd.followUp === "function") {
+              await cmd.followUp({ content: updatedBody } as any);
+              posted = true;
+            }
         } catch (err) {
           logger.warn("Failed to post search result summary fallback", {
             error: err instanceof Error ? err.message : String(err),
@@ -1028,8 +1030,10 @@ async function handleObAddCommand(message: Message): Promise<boolean> {
                 : null;
 
             if (!hasTextExt && contentType && !contentType.startsWith("text/")) {
-              await message.reply(
-                "⚠️ The referenced attachment does not appear to be a text file (unsupported Content-Type). Please provide a .md or .txt file or paste the text directly."
+              await sendWithFallback(
+                message,
+                "⚠️ The referenced attachment does not appear to be a text file (unsupported Content-Type). Please provide a .md or .txt file or paste the text directly.",
+                logger
               );
               return true;
             }
@@ -1045,11 +1049,13 @@ async function handleObAddCommand(message: Message): Promise<boolean> {
                 size: Number(contentLength),
                 max: MAX_ADD_BYTES,
               });
-              await message.reply(
-                `⚠️ Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`
-              );
-              return true;
-            }
+               await sendWithFallback(
+                 message,
+                 `⚠️ Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`,
+                 logger
+               );
+               return true;
+             }
 
             const textBody = await resp.text();
             if (Buffer.byteLength(textBody, "utf8") > MAX_ADD_BYTES) {
@@ -1058,11 +1064,13 @@ async function handleObAddCommand(message: Message): Promise<boolean> {
                 size: Buffer.byteLength(textBody, "utf8"),
                 max: MAX_ADD_BYTES,
               });
-              await message.reply(
-                `⚠️ Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`
-              );
-              return true;
-            }
+               await sendWithFallback(
+                 message,
+                 `⚠️ Attached file is too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the file.`,
+                 logger
+               );
+               return true;
+             }
 
             payload = textBody.trim();
           }
@@ -1073,8 +1081,10 @@ async function handleObAddCommand(message: Message): Promise<boolean> {
             error: err instanceof Error ? err.message : String(err),
           });
           if (fetchRefFailed) {
-            await message.reply(
-              "⚠️ I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again."
+            await sendWithFallback(
+              message,
+              "⚠️ I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again.",
+              logger
             );
             return true;
           }
@@ -1085,12 +1095,16 @@ async function handleObAddCommand(message: Message): Promise<boolean> {
 
     if (!payload) {
       if (fetchRefFailed) {
-        await message.reply(
-          "⚠️ I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again."
+        await sendWithFallback(
+          message,
+          "⚠️ I couldn't fetch the message you replied to. Please paste the text you want to add, or ensure the bot has permission to read message history in this channel, then try `ob add` again.",
+          logger
         );
       } else {
-        await message.reply(
-          "❌ Please provide text to add, for example: `ob add <text>` or reply to a message with `ob add`."
+        await sendWithFallback(
+          message,
+          "❌ Please provide text to add, for example: `ob add <text>` or reply to a message with `ob add`.",
+          logger
         );
       }
       return true;
@@ -1127,8 +1141,10 @@ async function handleObAddCommand(message: Message): Promise<boolean> {
         messageId: message.id,
         error: err instanceof Error ? err.message : String(err),
       });
-      await message.reply(
-        "❌ Failed to prepare temporary file for ingestion. Please try again or report this to the maintainers."
+      await sendWithFallback(
+        message,
+        "❌ Failed to prepare temporary file for ingestion. Please try again or report this to the maintainers.",
+        logger
       );
       return true;
     }
@@ -1146,13 +1162,15 @@ async function handleObAddCommand(message: Message): Promise<boolean> {
           messageId: message.id,
           error: err instanceof Error ? err.message : String(err),
         });
-        try {
-          await message.reply(
-            "❌ Failed to ingest text — an internal error occurred. Please try again later."
-          );
-        } catch {
-          // ignore reply failures
-        }
+           try {
+           await sendWithFallback(
+             message,
+             "❌ Failed to ingest text — an internal error occurred. Please try again later.",
+             logger
+           );
+         } catch {
+           // ignore reply failures
+         }
         throw err;
       }
     } finally {
@@ -1187,7 +1205,7 @@ async function handleCrawlCommand(message: Message): Promise<boolean> {
 
   const seed = crawl.seedUrl;
   if (!seed) {
-    await message.reply(formatMissingCrawlSeedMessage());
+    await sendWithFallback(message, formatMissingCrawlSeedMessage(), logger);
     return true;
   }
 
@@ -1210,7 +1228,7 @@ async function handleCrawlCommand(message: Message): Promise<boolean> {
 
     const queueResult = await crawlCommandHandler.queueSeed(message, seed);
 
-    if (queueResult.success) {
+      if (queueResult.success) {
       // Remove processing reaction and add success reaction
       await removeReaction(message, PROCESSING_REACTION, logger);
       await addReaction(message, SUCCESS_REACTION, logger);
@@ -1228,7 +1246,7 @@ async function handleCrawlCommand(message: Message): Promise<boolean> {
       );
 
       // Wrap in code ticks to avoid Discord creating an embed
-      await message.reply(formatQueuedUrlMessage(seed));
+      await sendWithFallback(message, formatQueuedUrlMessage(seed), logger);
     } else {
       // Remove processing reaction and add failure reaction
       await removeReaction(message, PROCESSING_REACTION, logger);
@@ -1243,8 +1261,10 @@ async function handleCrawlCommand(message: Message): Promise<boolean> {
           note: `Failed: ${queueResult.error}`,
         })
       );
-      await message.reply(
-        formatQueueFailureMessage(queueResult.error, CLI_UNAVAILABLE_MESSAGE)
+      await sendWithFallback(
+        message,
+        formatQueueFailureMessage(queueResult.error, CLI_UNAVAILABLE_MESSAGE),
+        logger
       );
     }
   } catch (error) {
@@ -1311,7 +1331,11 @@ async function handleCrawlCommand(message: Message): Promise<boolean> {
         logger.warn("Failed to post detailed CLI error report for queue command", {
           error: err instanceof Error ? err.message : String(err),
         });
-        await message.reply(`❌ Failed to queue URL\n\n${CLI_UNAVAILABLE_MESSAGE}`);
+        await sendWithFallback(
+          message,
+          `❌ Failed to queue URL\n\n${CLI_UNAVAILABLE_MESSAGE}`,
+          logger
+        );
       }
     } else {
       throw error;

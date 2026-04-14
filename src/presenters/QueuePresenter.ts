@@ -92,10 +92,23 @@ export class QueuePresenter {
     // structured warning if everything fails.
     let lastErr: any = null;
 
-    // 1) Prefer explicit target.send
+    // 1) Prefer explicit target.send (or reply when only reply is available)
     if (target && typeof target.send === "function") {
       try {
         return await target.send(body);
+      } catch (err) {
+        lastErr = err;
+        // continue to fallbacks
+      }
+    }
+
+    // If the target doesn't expose send but supports reply (Message-like),
+    // attempt reply before falling back to edit/channel send. This keeps
+    // behaviour consistent with previous inline fallbacks that used
+    // message.reply when a thread was not present.
+    if (target && typeof target.reply === "function") {
+      try {
+        return await target.reply(body);
       } catch (err) {
         lastErr = err;
         // continue to fallbacks

@@ -589,6 +589,7 @@ async function handleProcessingError(
     messageId: message.id,
     url,
     error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
   });
 
   // Handle CLI errors

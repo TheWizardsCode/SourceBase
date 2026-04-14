@@ -127,7 +127,7 @@ export class QueuePresenter {
     }
 
     // 3) If the provided target has a channel with send, use it
-    if (target && target.channel && typeof target.channel.send === "function") {
+    if (target && typeof target === "object" && target.channel && typeof target.channel.send === "function") {
       try {
         return await target.channel.send(body);
       } catch (err) {
@@ -136,7 +136,7 @@ export class QueuePresenter {
     }
 
     // 4) Nothing we can do at runtime - if this is a transport payload defer
-    if (target && (target.channelId || target.messageId || target.authorId)) {
+    if (target && typeof target === "object" && (target.channelId || target.messageId || target.authorId)) {
       this.logger?.debug?.("QueuePresenter.sendWithFallback: transport payload provided; deferring send", { payload: target });
       return target;
     }

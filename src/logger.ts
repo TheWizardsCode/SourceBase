@@ -23,9 +23,16 @@ const transport = isDev
   ? { target: "pino-pretty", options: { colorize: true, translateTime: "SYS:standard" } }
   : undefined;
 
-const pinoLogger = pino({
-  level: envLogLevel("info")
-}, transport ? pino.transport(transport as any) : undefined);
+// pino's typings/export shape can vary between versions and build setups.
+// Cast to any for the factory call to keep runtime behaviour while satisfying
+// TypeScript in environments where the module isn't callable according to the
+// type definitions.
+const pinoLogger = (pino as any)(
+  {
+    level: envLogLevel("info")
+  },
+  transport ? (pino as any).transport(transport as any) : undefined
+);
 
 export class Logger {
   constructor(private readonly level: LogLevel = envLogLevel("info")) {}

@@ -1,4 +1,5 @@
 import type { Message, ThreadChannel } from "discord.js";
+import { sendWithFallback } from "./QueuePresenter.js";
 import type { AddProgressEvent } from "../bot/cli-runner.js";
 import { formatProgressMessage } from "../formatters/progress.js";
 import type { Logger } from "../log/index.js";
@@ -80,43 +81,44 @@ export class ProgressPresenter {
   private async postStatusMessage(phase: string | undefined, content: string): Promise<void> {
     const key = phase ?? "__unknown__";
 
-    if (this.thread) {
-      try {
-        const posted = await this.thread.send(content);
-        this.lastPostedMessage = posted ?? this.lastPostedMessage;
-        if (posted) this.statusMessages.set(key, posted);
-      } catch (error) {
-        this.logger.warn(
-          "Failed to send progress update to thread; falling back to channel reply",
-          {
-            threadId: this.thread.id,
-            phase,
-            error: error instanceof Error ? error.message : String(error),
-          }
-        );
-        try {
-          const posted = await this.message.reply(content);
-          this.lastPostedMessage = posted ?? this.lastPostedMessage;
-          if (posted) this.statusMessages.set(key, posted);
-        } catch (err) {
-          this.logger.warn("Failed to send fallback progress reply to channel", {
-            messageId: this.message.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
+    // Use presenters-level sendWithFallback to centralise send/edit/channel.send
+    // semantics. The target is thread when present, otherwise fall back to
+    // the originating message which exposes reply(). sendWithFallback will
+    // attempt send/reply/edit/channel.send in a safe order and log structured
+    // warnings on failure.
+    try {
+      let posted: any = undefined;
+      if (this.thread) {
+        // First attempt the thread target. If that fails, fall back to the
+        // originating message so reply() is attempted (preserves previous
+        // fallback behaviour where message.reply() was the secondary path).
+        posted = await sendWithFallback(this.thread, content, this.logger, this.lastPostedMessage);
+        if (!posted) {
+          // Preserve previous logging behaviour for the thread->reply fallback
+          // so tests and observability remain stable.
+          this.logger.warn(
+            "Failed to send progress update to thread; falling back to channel reply",
+            {
+              threadId: this.thread.id,
+              phase,
+            }
+          );
+          posted = await sendWithFallback(this.message, content, this.logger, this.lastPostedMessage);
         }
+      } else {
+        posted = await sendWithFallback(this.message, content, this.logger, this.lastPostedMessage);
       }
-    } else {
-      try {
-        const posted = await this.message.reply(content);
-        this.lastPostedMessage = posted ?? this.lastPostedMessage;
-        if (posted) this.statusMessages.set(key, posted);
-      } catch (err) {
-        this.logger.warn("Failed to send progress update to channel", {
-          messageId: this.message.id,
-          phase,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+
+      this.lastPostedMessage = posted ?? this.lastPostedMessage;
+      if (posted) this.statusMessages.set(key, posted);
+    } catch (err) {
+      // In normal operation sendWithFallback never throws - it returns undefined
+      // on failure and logs. But be defensive: log any unexpected thrown error.
+      this.logger.warn("Unexpected error while sending progress update via sendWithFallback", {
+        messageId: this.message.id,
+        phase,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -134,14 +136,13 @@ export class ProgressPresenter {
       }
     }
 
+    // Fallback: use sendWithFallback to post a short item-link message. This
+    // will prefer thread send when available or reply otherwise, and will
+    // attempt channel.send as a last resort.
     try {
-      if (this.thread && typeof this.thread.send === "function") {
-        await this.thread.send(`\u2705 OpenBrain item: <${itemLink}>`);
-      } else if (this.message && typeof (this.message as any).reply === "function") {
-        await (this.message as any).reply(`\u2705 OpenBrain item: <${itemLink}>`);
-      }
+      await sendWithFallback(this.thread ?? this.message, `\u2705 OpenBrain item: <${itemLink}>`, this.logger, this.lastPostedMessage);
     } catch {
-      // ignore
+      // ignore unexpected throws
     }
   }
 

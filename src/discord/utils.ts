@@ -16,6 +16,7 @@ export function buildCliErrorReport(params: { command: string; args: string[]; e
   lines.push(`Command: \`${params.command} ${params.args.map(a => String(a)).join(' ')}\``);
   if (params.exitCode !== undefined) lines.push(`Exit code: ${params.exitCode}`);
   if (params.spawnError) lines.push(`Spawn error: ${params.spawnError}`);
+  if (params.spawnError) lines.push("The CLI failed to start (spawn error)");
   
   // Include the error message prominently (this is often the most useful information)
   if (params.error) {

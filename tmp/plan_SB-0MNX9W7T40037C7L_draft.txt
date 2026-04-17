@@ -1,0 +1,29 @@
+Batch B plan - convert safe plain-text .reply/.send to sendWithFallback
+
+Scope:
+- File: src/index.ts
+
+Goals:
+- Replace plain-string usages of message.reply(...) and message.send(...) with
+  sendWithFallback(target, body, logger, lastPostedMessage?) where safe.
+- Preserve all calls that pass objects (files, components, embeds, options) or use
+  interaction-specific APIs (editReply/followUp) — leave those unchanged.
+- Keep logging semantics intact when tests depend on specific warn strings.
+
+Process:
+1. Identify candidate call-sites in src/index.ts where .reply/.send is invoked with a plain string.
+2. Replace each candidate with import of sendWithFallback from presenters and call it
+   with the same target and body, passing logger when available. If the original code
+   used an earlier postedMessage to edit, pass that as lastPostedMessage.
+3. Run tests (npx vitest) after the change. If tests fail due to logging differences,
+   preserve previous logging by adjusting the surrounding code to call logger.warn with the
+   expected message or update tests if the structured warn is acceptable.
+4. Commit the change as a small focused commit. Push if requested.
+
+Notes:
+- This is an iterative safe-change approach. After src/index.ts, proceed to other files
+  (src/handlers/*, src/bot/*) in further batches.
+
+Branch: wl-SB-0MNX9W7T40037C7L-sendFallback
+
+Run tests after this batch: yes

@@ -1,5 +1,6 @@
 import { PermissionFlagsBits, type Message, type ChatInputCommandInteraction, type Interaction } from "discord.js";
 import type { Logger } from "../log/index.js";
+import { sendWithFallback } from "../presenters/QueuePresenter.js";
 
 /**
  * User-facing error message for CLI unavailability
@@ -183,7 +184,7 @@ export async function checkCliAvailability(
         messageId: message.id,
         channelId: message.channelId,
       });
-      await message.reply(CLI_UNAVAILABLE_MESSAGE);
+      await sendWithFallback(message, CLI_UNAVAILABLE_MESSAGE, logger);
       return false;
     }
 
@@ -194,7 +195,7 @@ export async function checkCliAvailability(
       messageId: message.id,
       error: error instanceof Error ? error.message : String(error),
     });
-    await message.reply(CLI_UNAVAILABLE_MESSAGE);
+    await sendWithFallback(message, CLI_UNAVAILABLE_MESSAGE, logger);
     return false;
   }
 }

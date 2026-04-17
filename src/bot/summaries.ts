@@ -8,6 +8,7 @@ import {
 import { ProgressPresenter } from "../presenters/progress.js";
 import { runSummaryCommand, type AddResult } from "./cli-runner.js";
 import { sleep } from "./utils.js";
+import { sendWithFallback } from "../presenters/QueuePresenter.js";
 
 /**
  * Retry configuration for summary generation
@@ -129,8 +130,9 @@ export async function resolveSummaryTarget(
     }
   }
 
-  if (typeof (message.channel as any).send === "function") {
-    return message.channel as unknown as SendableTarget;
+  const chAny = (message.channel as any) || null;
+  if (chAny && typeof chAny.send === "function") {
+    return chAny as unknown as SendableTarget;
   }
 
   return null;
@@ -243,19 +245,8 @@ export async function sendGeneratedSummary(
       error: summaryResult.error,
     });
 
-    try {
-      await target.send(
-        `⚠️ Failed to generate summary for <${addResult.url}> after ${SUMMARY_RETRY_ATTEMPTS} attempts. Marked for manual review.`
-      );
-    } catch (error) {
-      logger?.warn("Failed to send summary failure notice", {
-        messageId: message.id,
-        targetId: target.id,
-        url: addResult.url,
-        itemId: addResult.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    // Use presenters-level helper to centralise fallback semantics and logging
+    await sendWithFallback(target, `⚠️ Failed to generate summary for <${addResult.url}> after ${SUMMARY_RETRY_ATTEMPTS} attempts. Marked for manual review.`, logger);
     return;
   }
 
@@ -299,7 +290,8 @@ export async function sendGeneratedSummary(
   try {
     // If not too long, send full text in reply; otherwise send snippet and attach file.
     if (!isTooLong) {
-      await message.reply(fullText as any);
+      // Use presenters-layer fallback to prefer send(), reply(), edit(), channel.send()
+      await sendWithFallback(message, fullText as any, logger);
     } else {
       await message.reply({ content: snippetMessage, files: [file] } as any);
     }
@@ -314,25 +306,33 @@ export async function sendGeneratedSummary(
   }
 
   // Attempt to post to the resolved target (thread preferred or fallback).
-  try {
-    if (!isTooLong) {
-      // send full text inline
-      await (target as any).send(fullText);
-    } else {
-      // attach full content as a markdown file and include snippet in message
-      await (target as any).send({ content: snippetMessage, files: [file] });
+    // Post the summary/snippet using the presenters helper which will attempt
+    // send -> edit -> channel.send according to available runtime capabilities.
+    try {
+      if (!isTooLong) {
+        await sendWithFallback(target, fullText, logger);
+      } else {
+        await sendWithFallback(target, snippetMessage, logger);
+        // Try best-effort attach when target supports send with files
+        try {
+          if ((target as any)?.send && typeof (target as any).send === "function") {
+            await (target as any).send({ files: [file] });
+          }
+        } catch {
+          // ignore attach failures
+        }
+      }
+      anyPosted = true;
+    } catch (err) {
+      logger?.error("Failed to post generated summary to target", {
+        messageId: message.id,
+        targetId: target.id,
+        url: addResult.url,
+        itemId: addResult.id,
+        marker,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    anyPosted = true;
-  } catch (err) {
-    logger?.error("Failed to post generated summary to target", {
-      messageId: message.id,
-      targetId: target.id,
-      url: addResult.url,
-      itemId: addResult.id,
-      marker,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
 
   if (anyPosted) {
     postedSummaryMarkers.add(marker);

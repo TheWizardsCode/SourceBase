@@ -1118,8 +1118,10 @@ async function handleObAddCommand(message: Message): Promise<boolean> {
         size: Buffer.byteLength(payload, "utf8"),
         max: MAX_ADD_BYTES,
       });
-      await message.reply(
-        `⚠️ Text too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the text into smaller pieces.`
+      await sendWithFallback(
+        message,
+        `⚠️ Text too large to ingest directly (max ${MAX_ADD_BYTES} bytes). Please provide a URL or split the text into smaller pieces.`,
+        logger
       );
       return true;
     }

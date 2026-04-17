@@ -130,8 +130,9 @@ export async function resolveSummaryTarget(
     }
   }
 
-  if (typeof (message.channel as any).send === "function") {
-    return message.channel as unknown as SendableTarget;
+  const chAny = (message.channel as any) || null;
+  if (chAny && typeof chAny.send === "function") {
+    return chAny as unknown as SendableTarget;
   }
 
   return null;
@@ -289,7 +290,8 @@ export async function sendGeneratedSummary(
   try {
     // If not too long, send full text in reply; otherwise send snippet and attach file.
     if (!isTooLong) {
-      await message.reply(fullText as any);
+      // Use presenters-layer fallback to prefer send(), reply(), edit(), channel.send()
+      await sendWithFallback(message, fullText as any, logger);
     } else {
       await message.reply({ content: snippetMessage, files: [file] } as any);
     }

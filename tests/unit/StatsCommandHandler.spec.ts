@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { StatsCommandHandler } from "../../src/handlers/StatsCommandHandler.js";
 
 describe("StatsCommandHandler", () => {
@@ -59,6 +59,55 @@ describe("StatsCommandHandler", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       "❌ Failed to retrieve OpenBrain statistics. Please try again."
     );
+  });
+
+  it("truncates large stats output for Discord and logs full output (non-test env)", async () => {
+    // Simulate very large CLI output
+    const largeOutput = "A".repeat(5000);
+    const runStatsMock = vi.fn(async () => ({ raw: largeOutput }));
+
+    const handler = new StatsCommandHandler({
+      runStats: runStatsMock as any,
+    });
+
+    const interaction: any = {
+      commandName: "stats",
+      id: "interaction-3",
+      channelId: "channel-3",
+      user: { id: "user-3" },
+      deferReply: vi.fn(async () => undefined),
+      editReply: vi.fn(async () => undefined),
+    };
+
+    // Temporarily set NODE_ENV to a non-test value to exercise truncation
+    const prevEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined as any);
+
+    const handled = await handler.handleCommand(interaction);
+
+    // Restore NODE_ENV
+    process.env.NODE_ENV = prevEnv;
+
+    expect(handled).toBe(true);
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
+    expect(runStatsMock).toHaveBeenCalled();
+
+    // Ensure the bot replied with a truncated code block and a footer
+    expect(interaction.editReply).toHaveBeenCalled();
+    const replyArg = (interaction.editReply as any).mock.calls[0][0] as string;
+    expect(replyArg.includes("...(truncated)") || replyArg.includes("... (truncated)")).toBeTruthy();
+    expect(replyArg.includes("Truncated output - see bot logs") || replyArg.includes("Truncated output - see bot logs or run `ob stats` locally for full output")).toBeTruthy();
+
+    // Full output should have been logged
+    expect(consoleInfo).toHaveBeenCalled();
+    // The second console.info call should include the full raw output
+    const logged = consoleInfo.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((s) => s.includes("stats output truncated"))).toBeTruthy();
+    expect(logged.some((s) => s === largeOutput)).toBeTruthy();
+
+    consoleInfo.mockRestore();
   });
 
   it("returns false for non-stats command", async () => {
